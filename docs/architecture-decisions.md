@@ -168,3 +168,29 @@
   - Pro: Simpler code — removes `crate_to_csv_name()`, CSV column mapping, per-file I/O loop
   - Con: JSON is slightly less human-readable than CSV for quick inspection (but still inspectable)
   - Con: One-time migration effort to replace CSV plumbing
+
+### ADR-008: Distribution and Update Strategy
+- **Status:** Accepted
+- **Date:** 2026-04-10
+- **Context:** Ship a Python desktop app to friends on Windows and macOS with a way to deliver updates. Needs to be zero-cost (hobby project), survive upgrades without losing user data, and demand minimal ongoing maintenance. Five sub-decisions were required.
+
+- **Decision:**
+
+  **1. GitHub Releases on a dedicated public repo as the distribution mechanism.** The project ships from `grantcomply/sidecar` (a standalone public repo split out from the earlier monorepo). Considered alternatives: self-hosting on a personal domain, S3 + CloudFront, third-party installer hosts. Public GitHub Releases wins on anonymous downloads (no auth tokens baked into the updater), a free CDN for release assets, and unlimited free GitHub Actions minutes including macOS runners — private repos cap macOS at ~200 minutes/month.
+
+  **2. PyInstaller one-folder + Inno Setup on Windows, zipped `.app` on macOS.** Considered one-file PyInstaller (simpler distribution) but rejected it: one-file extracts into a temp directory on every launch, adding 1–3s of startup latency and triggering Windows Defender false positives more often. One-folder is faster, less suspicious, and easier to wrap in a real installer. Inno Setup is free, open source, and runs on `windows-latest` with no licensing concerns. On macOS, `ditto -c -k --keepParent` is used instead of plain `zip` because it preserves bundle attributes.
+
+  **3. Roll-your-own updater with a `latest.json` manifest.** Considered `tufup` and `PyUpdater` but rejected both for this stage: the client is ~80 LOC and uses only `urllib`, `json`, and `packaging.version.Version`. A full TUF-based framework adds dependency weight and release-process complexity that a hobby-scale project shipping to a handful of friends can't justify. If the user base grows, `tufup` is the documented upgrade path — it's actively maintained and the swap is well-defined. `PyUpdater` is stagnant since 2022 and not a future path. The manifest is hosted at a floating `latest` tag so the URL stays stable across versions: `https://github.com/grantcomply/sidecar/releases/download/latest/latest.json`.
+
+  **4. Unsigned binaries on both platforms.** Code signing costs money ($99/year Apple Developer Program, $200+/year Windows OV/EV certificate). For a hobby app shipping to friends, neither is justifiable. Users hit SmartScreen on Windows and Gatekeeper on macOS once per install; both workarounds are a few clicks and documented in the README. The alternative — paying for a cert — would be the single largest ongoing cost of the project and buys only a small UX polish.
+
+  **5. `platformdirs` for user data locations.** Considered hand-rolled `os.environ["APPDATA"]` / `~/Library/Application Support` lookups. `platformdirs` is small, pure-Python, well-maintained, and correctly handles edge cases (XDG fallback on Linux, roaming vs local on Windows). Cache and settings live in `%APPDATA%\SeratoSidecar\` on Windows and `~/Library/Application Support/SeratoSidecar/` on macOS so they survive upgrades — PyInstaller bundles extract into read-only temp dirs, so storing user data next to the exe is not an option.
+
+- **Consequences:**
+  - Pro: Zero ongoing hosting cost, zero signing cost, free CI minutes on macOS.
+  - Pro: Friends can install the app with one download and one click-through of a security prompt.
+  - Pro: User data is preserved across upgrades automatically; no migration logic needed per release.
+  - Pro: The updater is small enough to audit in one sitting and has no framework lock-in.
+  - Con: Unsigned binaries produce a scary one-time dialog on both platforms — requires a clear README explanation to avoid users bouncing.
+  - Con: The roll-your-own updater offers no silent in-place upgrade (user has to click Download and run the installer). Acceptable trade-off for this scale.
+  - Con: macOS builds are produced by CI but currently unverified on a real Mac — first real-world Mac user will be the de facto QA.

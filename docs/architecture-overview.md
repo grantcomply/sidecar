@@ -30,9 +30,10 @@ Serato Sidecar is a desktop companion app for DJs using Serato DJ software. It r
 │       │ │           │  │            │
 │Track  │ │Camelot    │  │Dashboard   │
 │Library│ │Suggestions│  │Suggestions │
-│       │ │CrateSync  │  │Session     │
-│       │ │Export     │  │Settings    │
-│       │ │Comments   │  │Search      │
+│       │ │CrateParser│  │Session     │
+│       │ │CrateSync  │  │Settings    │
+│       │ │Cache      │  │Tooltip     │
+│       │ │Updater    │  │Utils       │
 └───────┘ └──────────┘  └────────────┘
 ```
 
@@ -53,9 +54,10 @@ Business logic and external integrations. No UI knowledge.
 |-----------|---------------|
 | `camelot.py` | Camelot wheel harmonic compatibility scoring |
 | `suggestion_engine.py` | Weighted multi-factor track scoring algorithm |
-| `export_crates.py` | Serato .crate binary file parser + CSV exporter |
+| `crate_parser.py` | Serato .crate binary file parser + ID3 metadata reader |
 | `crate_sync.py` | Background thread wrapper for crate export |
-| `comments_parser.py` | ID3 Comments field structured parser |
+| `cache.py` | JSON cache read/write for the in-memory track library |
+| `updater.py` | Fetches release manifest from GitHub and returns `UpdateInfo` if a newer version exists. Called from a background daemon thread on app startup. |
 
 ### UI (`ui/`)
 Presentation layer. CustomTkinter widgets and panels.
@@ -66,18 +68,18 @@ Presentation layer. CustomTkinter widgets and panels.
 | `suggestion_panel.py` | Scored suggestions grid with crate filtering |
 | `session_panel.py` | Setlist history with track management |
 | `sync_panel.py` | Settings dialog for Serato folder and sync |
-| `search_panel.py` | Autocomplete search dropdown |
 | `tooltip.py` | Reusable hover tooltip widget |
+| `utils.py` | Shared UI helper functions |
 
 ## Data Flow
 
 ```
 Serato .crate files
     │
-    ▼ (export_crates.py)
-CSV files in crate-exports/
+    ▼ (crate_parser.py + crate_sync.py)
+track_cache.json in user data dir
     │
-    ▼ (TrackLibrary.load_from_csv_dir)
+    ▼ (cache.py + TrackLibrary)
 In-memory TrackLibrary
     │
     ├──▶ Search → Track selection → NowPlayingDashboard
@@ -94,13 +96,13 @@ In-memory TrackLibrary
 ## Current State & Known Issues
 
 ### Architectural Debt (prioritised)
-1. **Broken import scheme** — All imports use `from source.xxx` but the project folder is `serato-sidecar/`, not `source/`. `main.py` manipulates `sys.path` to go two levels up, but no `source/` package exists at that level. This makes the app fragile and non-standard.
-2. **Hardcoded Windows paths** — `config.py:8` has `FALLBACK_SUBCRATES_DIR = r"C:\Users\grant\Music\_Serato_\Subcrates"` and `export_crates.py:13` has `DEFAULT_MUSIC_ROOT = "C:\\"`. Both break on macOS/Linux.
-3. **Dead code** — `ui/search_panel.py` (`SearchPanel` class) is never imported or used anywhere. Its functionality was absorbed into `ui/track_detail.py` (`NowPlayingDashboard`).
-4. **Duplicated `_truncate` method** — Identical `_truncate(self, text, max_len)` appears in `track_detail.py:188`, `suggestion_panel.py:306`, `session_panel.py:120`, and `search_panel.py:87`.
-5. **Duplicated Camelot regex** — `CAMELOT_RE` is defined independently in both `camelot.py:3` and `comments_parser.py:14`, with slightly different patterns.
-6. **Bare `except Exception: pass`** — `app.py` lines 129, 144, 168 silently swallow errors when checking dialog state. `export_crates.py:74` silently returns empty metadata on any ID3 read failure.
-7. **No logging** — All diagnostic output uses `print()` statements (`export_crates.py` lines 48, 150, 153-154, 166, 175, 177-179) or toast notifications.
+1. **Broken import scheme** — ~~All imports use `from source.xxx` but the project folder is `serato-sidecar/`, not `source/`.~~ **Resolved** during Phase 1 of the deployment work. Code now lives under a proper `source/` package with no `sys.path` manipulation. See `docs/architecture-decisions.md` (ADR-004).
+2. **Hardcoded Windows paths** — ~~`config.py:8` has `FALLBACK_SUBCRATES_DIR = r"C:\Users\grant\Music\_Serato_\Subcrates"` and `export_crates.py:13` has `DEFAULT_MUSIC_ROOT = "C:\\"`.~~ **Resolved** during Phase 1. `config.py` uses `Path.home()` and `crate_parser.py` detects `sys.platform`. See ADR-005.
+3. **Dead code** — ~~`ui/search_panel.py` (`SearchPanel` class) is never imported or used.~~ **Resolved** — `search_panel.py` has been deleted.
+4. **Duplicated `_truncate` method** — Identical `_truncate(self, text, max_len)` appears in `track_detail.py`, `suggestion_panel.py`, and `session_panel.py`. Candidate for extraction into `ui/utils.py`.
+5. **Duplicated Camelot regex** — `CAMELOT_RE` patterns historically lived in multiple services. Now centralised in `camelot.py` — verify on next touch of the parser code.
+6. **Bare `except Exception: pass`** — `app.py` silently swallows errors when checking dialog state. `crate_parser.py` silently returns empty metadata on any ID3 read failure.
+7. **No logging** — Diagnostic output still uses `print()` statements or toast notifications.
 8. **`os.path` everywhere** — Coding standards specify `pathlib.Path` but every file uses `os.path` for all path operations.
 9. **No tests** — Zero automated test coverage.
 10. **Mutable default in dataclass** — `Track.crates: list = field(default_factory=list)` is correctly handled with `field()`, but the list is mutated in-place by `library.py:41`, coupling library loading to track state.
@@ -117,10 +119,10 @@ In-memory TrackLibrary
 
 The current architecture is fundamentally sound for a hobby project. The recommendations below are ordered by impact-to-effort ratio and designed to be tackled one at a time:
 
-1. **Fix the import/package structure** — Rename folder or add proper `__init__.py` so imports work without `sys.path` hacks
-2. **Fix cross-platform paths** — Replace hardcoded Windows paths with `Path.home()` detection
-3. **Delete dead code** — Remove `search_panel.py`
-4. **Extract shared utilities** — Move `_truncate()` and shared constants to a utility module
+1. ~~**Fix the import/package structure**~~ — Done (Phase 1 of deployment work)
+2. ~~**Fix cross-platform paths**~~ — Done (Phase 1 of deployment work)
+3. ~~**Delete dead code**~~ — Done (`search_panel.py` removed)
+4. **Extract shared utilities** — Move `_truncate()` and shared constants into `ui/utils.py`
 5. **Add logging** — Replace `print()` with Python `logging` module
-6. **Add Phase 1 tests** — Unit tests for `camelot.py`, `comments_parser.py`, `suggestion_engine.py`
+6. **Add Phase 1 tests** — Unit tests for `camelot.py`, `crate_parser.py`, `suggestion_engine.py`
 7. **Migrate to pathlib** — Gradually replace `os.path` with `pathlib.Path`

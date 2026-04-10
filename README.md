@@ -2,7 +2,40 @@
 
 A desktop app that helps you pick the right next track while DJing. Select your currently playing track and get scored suggestions based on harmonic compatibility, energy flow, BPM proximity, and style affinity.
 
-## Quick Start
+## Installing (End Users)
+
+Prebuilt installers are published on the [GitHub releases page](https://github.com/grantcomply/sidecar/releases/latest). Open that link and grab the asset for your platform from the **Assets** list:
+
+- **Windows:** the `.exe` installer (e.g. `SeratoSidecar-Setup-0.1.1.exe`)
+- **macOS:** the `.zip` bundle (e.g. `SeratoSidecar-0.1.1-mac.zip`)
+
+The filename version number will change over time. Always pull from `/releases/latest` and grab whichever `.exe` or `.zip` is listed — that way you never have to hand-edit a URL per release.
+
+> Note: macOS builds are produced by CI on every release, but have not yet been validated end-to-end on a real Mac by a user. They *should* work; treat them as unverified until that changes.
+
+### First Run — Windows (SmartScreen workaround)
+
+On first launch Windows will show a blue **"Windows protected your PC"** dialog. Click **More info**, then **Run anyway**. You only need to do this once per install.
+
+This happens because the binary is unsigned. A Windows OV/EV code-signing certificate runs $200+/year, which isn't justifiable for a hobby app shipped to friends. We're upfront about that rather than trying to obscure it.
+
+### First Run — macOS (Gatekeeper workaround)
+
+On first launch macOS will say **"SeratoSidecar cannot be opened because Apple cannot check it for malicious software"**. Right-click (or Ctrl-click) the app icon, choose **Open**, then click **Open** in the dialog that follows. You only need to do this once per install.
+
+Same reason as Windows: the Apple Developer Program is $99/year and we're not paying for a hobby project.
+
+### Auto-Updates
+
+On startup the app checks GitHub for a newer release. If one exists, a toast appears in the app with a **Download** button; clicking it opens the new installer in your default browser. Run the installer like you did the first time — no need to uninstall the old version first. Your settings and crate cache are preserved across upgrades.
+
+User data (cache + settings) lives at:
+- **Windows:** `%APPDATA%\SeratoSidecar\`
+- **macOS:** `~/Library/Application Support/SeratoSidecar/`
+
+To disable the update check (e.g. for offline gigs), add `CHECK_FOR_UPDATES=false` to `settings.env` in that directory.
+
+## Running from Source (Developers)
 
 ### Prerequisites
 
@@ -29,7 +62,7 @@ The app opens a dark-themed window and auto-loads your track library from existi
 
 The top bar shows your Serato Subcrates folder path (auto-detected from your home directory). Click **Browse** to change it if needed, then click **Sync** to export all your Serato crates into CSV files the app can read.
 
-You only need to sync when you've added or removed tracks in Serato. If you've already run `export_crates.py` before, the app picks up those existing CSVs automatically.
+You only need to sync when you've added or removed tracks in Serato. The app caches everything to `track_cache.json` in your user data directory and reloads from there on subsequent launches.
 
 ### 2. Search for the Currently Playing Track
 
@@ -81,21 +114,23 @@ For example: `4A - 7 - Banger - Fat Bass Vocal`
 ## Project Structure
 
 ```
-serato-sidecar/
+sidecar/
   main.py                      # Entry point — run this
   requirements.txt             # Python dependencies
   source/
+    __version__.py             # Single source of truth for the version string
     app.py                     # Main window layout and wiring
     config.py                  # Default paths, scoring weights, affinity matrix
     models/
       track.py                 # Track data model
-      library.py               # CSV loading, deduplication, search
+      library.py               # In-memory library, deduplication, search
     services/
       camelot.py               # Camelot wheel compatibility logic
-      comments_parser.py       # Parses the Comments metadata field
+      crate_parser.py          # Serato .crate binary parser + ID3 metadata reader
       crate_sync.py            # Background Serato crate sync
-      export_crates.py         # Serato .crate binary parser + CSV exporter
+      cache.py                 # JSON cache read/write
       suggestion_engine.py     # Track scoring algorithm
+      updater.py               # Checks GitHub for new releases on startup
     ui/
       track_detail.py          # Now-playing dashboard with search
       suggestion_panel.py      # Scored suggestions list
@@ -104,7 +139,6 @@ serato-sidecar/
       tooltip.py               # Hover tooltip utility
       utils.py                 # Shared UI helpers
   docs/                        # Architectural documentation
-  crate-exports/               # CSV files generated from Serato crates
 ```
 
 ## Tuning the Scoring

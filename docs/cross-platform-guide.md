@@ -6,9 +6,9 @@
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Windows 10/11 | Primary | Currently developed and tested here |
-| macOS | Planned | Serato is popular on Mac — high priority |
-| Linux | Future | Lower priority, but should work if we follow the rules |
+| Windows 10/11 | Shipped | Primary development and test platform; v0.1.1 verified end-to-end |
+| macOS | Built (unverified) | CI produces a zipped `.app` per release, but no user has run it on a real Mac yet |
+| Linux | Future | Lower priority; Serato doesn't run natively on Linux, so end-user demand is limited |
 
 ## Serato Paths by Platform
 
@@ -18,10 +18,13 @@
 | macOS | `/Users/<user>/Music/_Serato_/Subcrates` |
 | Linux | N/A (Serato doesn't run natively on Linux) |
 
-### Current Issues (must fix)
-- `config.py:8` hardcodes `C:\Users\grant\Music\_Serato_\Subcrates` — breaks macOS/Linux
-- `export_crates.py:13` hardcodes `DEFAULT_MUSIC_ROOT = "C:\\"` — breaks macOS/Linux
-- `tooltip.py:32` hardcodes font `("Segoe UI", 10)` — Segoe UI is Windows-only
+### Current Issues
+
+No known cross-platform issues as of v0.1.1. The historical list below is preserved for context — all items are resolved:
+
+- ~~`config.py` hardcoded `C:\Users\grant\Music\_Serato_\Subcrates`~~ — resolved (uses `Path.home()`)
+- ~~`crate_parser.py` hardcoded `DEFAULT_MUSIC_ROOT = "C:\\"`~~ — resolved (detects `sys.platform`)
+- ~~`tooltip.py` hardcoded font `("Segoe UI", 10)`~~ — resolved (uses platform-default font)
 
 ### How to Handle
 - Use `Path.home() / "Music" / "_Serato_" / "Subcrates"` as the default
@@ -73,16 +76,31 @@ csv_path = export_dir + "\\" + crate_name + ".csv"
 - Track paths inside .crate files use the OS-native separator from when they were created
 - When reading paths from .crate files, normalize to the current OS: `Path(raw_path)`
 
-## Packaging & Distribution (future)
+## Packaging & Distribution
 
-| Tool | Platform | Notes |
-|------|----------|-------|
-| PyInstaller | All | Single executable, most mature |
-| cx_Freeze | All | Alternative to PyInstaller |
-| py2app | macOS | macOS-specific, creates .app bundle |
-| Nuitka | All | Compiles to C, best performance |
+The shipped packaging system is a matrix of per-platform builds driven by a single PyInstaller spec and orchestrated by GitHub Actions. Released via the public repo at `grantcomply/sidecar`.
 
-### Recommended approach
-- PyInstaller for initial cross-platform distribution
-- Platform-specific CI builds (GitHub Actions with matrix strategy)
-- Separate `.spec` files per platform if needed
+### Build pipeline
+
+| Stage | Windows | macOS |
+|-------|---------|-------|
+| Bundle | `pyinstaller serato-sidecar.spec` (one-folder) | `pyinstaller serato-sidecar.spec` → `SeratoSidecar.app` (via `BUNDLE` block) |
+| Installer | Inno Setup (`build/installer.iss`) → `SeratoSidecar-Setup-<version>.exe` | `ditto -c -k --keepParent` → `SeratoSidecar-<version>-mac.zip` |
+| Runner | `windows-latest` GHA runner | `macos-latest` GHA runner |
+
+The PyInstaller spec is one-folder (not one-file) to keep startup fast and reduce Windows Defender false positives. The CTk theme directory is bundled via `collect_all('customtkinter')` — missing this is the most common breakage.
+
+### Release workflow
+
+`.github/workflows/release.yml` triggers on `v*` tag pushes. It runs the two build jobs in parallel, then a `release` job on `ubuntu-latest` that:
+
+1. Downloads both build artifacts.
+2. Generates `latest.json` (the manifest consumed by the auto-updater).
+3. Publishes a GitHub release with three assets (Windows installer, Mac zip, `latest.json`).
+4. Re-points the floating `latest` tag at the new commit so the manifest URL stays stable: `https://github.com/grantcomply/sidecar/releases/download/latest/latest.json`.
+
+Installed clients fetch that URL on startup and compare versions. See `source/services/updater.py` for the client side and `docs/deployment-guide.md` for the release runbook.
+
+### Code signing
+
+Neither platform ships signed binaries. Apple Developer Program ($99/year) and Windows OV/EV certs ($200+/year) aren't justified for a hobby app. The one-time SmartScreen and Gatekeeper workarounds are documented in `README.md`.
