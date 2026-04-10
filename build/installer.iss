@@ -11,11 +11,18 @@
 ; now; Phase 3's GHA workflow will substitute it from source\__version__.py
 ; before invoking ISCC.
 
-; TODO(phase-3): source MyAppVersion from source\__version__.py so a single
-; file drives both the Python app version and the installer version.
+; MyAppVersion can be overridden from the command line via
+;     ISCC.exe /DMyAppVersion=1.2.3 build\installer.iss
+; which is exactly what the GitHub Actions release workflow does (see
+; .github/workflows/release.yml) after deriving the version from the pushed
+; tag. The #ifndef guard below is load-bearing: Inno Setup's #define will
+; NOT overwrite an existing definition, so the /D on the command line only
+; takes effect if we skip the fallback when the variable is already set.
 #define MyAppName "Serato Sidecar"
 #define MyAppExeName "SeratoSidecar.exe"
-#define MyAppVersion "0.1.0"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.0"
+#endif
 #define MyAppPublisher "Grant"
 #define MyAppURL "https://example.com/todo-set-real-url"
 

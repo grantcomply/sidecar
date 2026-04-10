@@ -1,0 +1,363 @@
+# Serato Sidecar — release workflow.
+#
+# Phase 3 of plans/deployment-plan.md. Fires on any `v*` tag push (the normal
+# release trigger) OR on manual dispatch from the GitHub UI (useful for
+# debugging the workflow itself without publishing a real version).
+#
+# Pipeline:
+#   build-windows  -> PyInstaller -> Inno Setup -> SeratoSidecar-Setup-<ver>.exe
+#   build-macos    -> PyInstaller -> ditto zip  -> SeratoSidecar-<ver>-mac.zip
+#   release        -> downloads both artifacts, generates latest.json, creates
+#                     the GitHub Release, and re-points the floating `latest`
+#                     tag at a stable pointer release for the Phase 4 updater.
+#
+# First-run expectation: budget 2-3 typo/path failures on the real runner.
+# This file cannot be fully verified from a Windows dev box.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger for debugging. Note: when run via workflow_dispatch, there
+  # is no tag, so the version-derivation step falls back to a placeholder.
+  # The release job will still fail fast if there's no real tag, which is
+  # what we want — dispatch is for smoke-testing the build jobs only.
+  workflow_dispatch:
+
+# `contents: write` is needed by the release job to create releases and to
+# force-push the floating `latest` tag. Set at the workflow level so every
+# job inherits it — simpler than repeating per-job.
+permissions:
+  contents: write
+
+# Prevent two simultaneous releases of the same ref from racing. We do NOT
+# cancel in-progress runs: a half-finished release is worse than a queued one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows installer build.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        # PyInstaller is a build-time dep only; intentionally not in
+        # requirements.txt (Phase 2 decision).
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Derive version from tag
+        id: version
+        shell: bash
+        # github.ref_name is e.g. "v0.1.0" on tag pushes. Strip the leading
+        # "v" so downstream tools get the bare semver string. On manual
+        # workflow_dispatch there is no tag; fall back to "0.0.0-dev" so the
+        # build still proceeds (the release job will refuse to publish).
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Derived version: ${VERSION}"
+
+      - name: Verify tag matches source/__version__.py
+        # Catches the most common release mistake: pushing a tag without
+        # bumping __version__.py. Skipped on workflow_dispatch because
+        # there's no tag to compare against.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          FILE_VERSION=$(python -c "exec(open('source/__version__.py').read()); print(__version__)")
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          if [[ "${FILE_VERSION}" != "${TAG_VERSION}" ]]; then
+            echo "::error::Tag version v${TAG_VERSION} does not match source/__version__.py (${FILE_VERSION}). Bump __version__.py before tagging."
+            exit 1
+          fi
+          echo "Version check passed: ${FILE_VERSION}"
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: pyinstaller serato-sidecar.spec --noconfirm
+
+      - name: Compile Inno Setup installer
+        # Minionguyjpro/Inno-Setup-Action is the de-facto standard installer
+        # for ISCC on GHA runners. Pinned to a specific version for supply
+        # chain hygiene — do NOT bump to @main or @latest without review.
+        # The /DMyAppVersion option relies on the #ifndef guard we added to
+        # build/installer.iss in Phase 3.
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.5
+        with:
+          path: build/installer.iss
+          options: /DMyAppVersion=${{ steps.version.outputs.version }}
+
+      - name: Confirm installer was produced
+        shell: bash
+        # The .iss sets OutputDir=output (relative to the .iss file) and
+        # OutputBaseFilename=SeratoSidecar-Setup-{#MyAppVersion}, so the
+        # resulting file lives at build/output/SeratoSidecar-Setup-<ver>.exe.
+        run: |
+          EXPECTED="build/output/SeratoSidecar-Setup-${{ steps.version.outputs.version }}.exe"
+          if [[ ! -f "${EXPECTED}" ]]; then
+            echo "::error::Expected installer not found at ${EXPECTED}"
+            ls -la build/output/ || echo "(no build/output/ directory)"
+            exit 1
+          fi
+          ls -la "${EXPECTED}"
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/output/SeratoSidecar-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # macOS .app build.
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: Build macOS .app
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Derive version from tag
+        id: version
+        # Same logic as the Windows job — keeping it inline rather than
+        # factoring into a composite action; two jobs isn't enough repetition
+        # to justify the indirection.
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Derived version: ${VERSION}"
+
+      - name: Verify tag matches source/__version__.py
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          FILE_VERSION=$(python -c "exec(open('source/__version__.py').read()); print(__version__)")
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          if [[ "${FILE_VERSION}" != "${TAG_VERSION}" ]]; then
+            echo "::error::Tag version v${TAG_VERSION} does not match source/__version__.py (${FILE_VERSION}). Bump __version__.py before tagging."
+            exit 1
+          fi
+          echo "Version check passed: ${FILE_VERSION}"
+
+      - name: Generate icon.icns from SeratoSidecarLogo.png
+        # sips and iconutil are macOS-native, no install needed. The spec
+        # file (serato-sidecar.spec) looks for icon.icns at the repo root
+        # and falls back to no icon if absent — so we must generate it here
+        # BEFORE invoking PyInstaller.
+        run: |
+          mkdir icon.iconset
+          sips -z 16 16     source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_16x16.png
+          sips -z 32 32     source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_32x32.png
+          sips -z 64 64     source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_128x128.png
+          sips -z 256 256   source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_256x256.png
+          sips -z 512 512   source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_512x512.png
+          sips -z 1024 1024 source/ui/SeratoSidecarLogo.png --out icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icon.iconset -o icon.icns
+          ls -la icon.icns
+
+      - name: Build with PyInstaller
+        # The spec's BUNDLE block (macOS only) wraps the one-folder output
+        # into dist/SeratoSidecar.app with the right Info.plist.
+        run: pyinstaller serato-sidecar.spec --noconfirm
+
+      - name: Zip the .app bundle with ditto
+        # CRITICAL: must use `ditto`, not plain `zip`. Plain zip mangles
+        # bundle attributes (extended attributes, symlinks, etc.) and the
+        # resulting .app fails to launch on the user's Mac. --keepParent
+        # preserves the SeratoSidecar.app directory wrapper inside the zip
+        # so the user gets a proper bundle when they unzip it.
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ ! -d "dist/SeratoSidecar.app" ]]; then
+            echo "::error::dist/SeratoSidecar.app not found after PyInstaller run"
+            ls -la dist/ || true
+            exit 1
+          fi
+          ditto -c -k --keepParent "dist/SeratoSidecar.app" "SeratoSidecar-${VERSION}-mac.zip"
+          ls -la "SeratoSidecar-${VERSION}-mac.zip"
+
+      - name: Upload macOS .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: SeratoSidecar-*-mac.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Publish release + move floating `latest` tag.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos]
+    # Only publish on real tag pushes. workflow_dispatch runs build the
+    # artifacts for smoke testing but never create a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Flatten artifacts into working dir
+        # download-artifact@v4 places each artifact under its own subdir
+        # (artifacts/windows-installer/..., artifacts/macos-app/...).
+        # gh release create takes plain filenames, so we move them all up.
+        run: |
+          mv ./artifacts/windows-installer/SeratoSidecar-Setup-*.exe ./
+          mv ./artifacts/macos-app/SeratoSidecar-*-mac.zip ./
+          ls -la SeratoSidecar-*
+
+      - name: Derive version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Derived version: ${VERSION}"
+
+      - name: Generate latest.json manifest
+        id: manifest
+        # Schema matches plans/deployment-plan.md section 4.1. The Phase 4
+        # updater client will GET this file from the `latest` floating-tag
+        # release to check for new versions. Important: the repo owner/name
+        # is pulled from github.repository so this workflow is portable when
+        # the project moves from the current private repo to the public one.
+        #
+        # The manifest is built via a tiny Python script rather than a bash
+        # heredoc so that the notes field gets correctly JSON-escaped even
+        # if it contains quotes, backslashes, etc. All inputs are passed via
+        # env vars (NOT string interpolation) to sidestep shell quoting
+        # problems entirely.
+        env:
+          MANIFEST_VERSION: ${{ steps.version.outputs.version }}
+          MANIFEST_REPO: ${{ github.repository }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          RELEASED=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          if [[ -f release-notes.md ]]; then
+            # Keep the manifest's notes field simple — use a single-line
+            # summary. Full notes live in the GitHub Release body.
+            NOTES=$(head -n 1 release-notes.md)
+          else
+            NOTES="Release ${VERSION}"
+          fi
+          export MANIFEST_RELEASED="${RELEASED}"
+          export MANIFEST_NOTES="${NOTES}"
+          python - <<'PYEOF' > latest.json
+          import json, os
+          version = os.environ["MANIFEST_VERSION"]
+          repo    = os.environ["MANIFEST_REPO"]
+          base    = f"https://github.com/{repo}/releases/download/v{version}"
+          manifest = {
+              "version":  version,
+              "released": os.environ["MANIFEST_RELEASED"],
+              "notes":    os.environ["MANIFEST_NOTES"],
+              "assets": {
+                  "windows": f"{base}/SeratoSidecar-Setup-{version}.exe",
+                  "macos":   f"{base}/SeratoSidecar-{version}-mac.zip",
+              },
+          }
+          print(json.dumps(manifest, indent=2))
+          PYEOF
+          cat latest.json
+
+      - name: Create versioned GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # If release-notes.md is present, use it; otherwise fall back to a
+        # one-line default so the user isn't forced to write notes for every
+        # patch release.
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ -f release-notes.md ]]; then
+            gh release create "v${VERSION}" \
+              --title "Serato Sidecar v${VERSION}" \
+              --notes-file release-notes.md \
+              "SeratoSidecar-Setup-${VERSION}.exe" \
+              "SeratoSidecar-${VERSION}-mac.zip" \
+              latest.json
+          else
+            gh release create "v${VERSION}" \
+              --title "Serato Sidecar v${VERSION}" \
+              --notes "Release v${VERSION}" \
+              "SeratoSidecar-Setup-${VERSION}.exe" \
+              "SeratoSidecar-${VERSION}-mac.zip" \
+              latest.json
+          fi
+
+      - name: Move floating `latest` tag and pointer release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # This is the load-bearing piece of Phase 4: the updater client
+        # fetches latest.json from a stable URL that does NOT change with
+        # each release:
+        #
+        #   https://github.com/<owner>/<repo>/releases/download/latest/latest.json
+        #
+        # To make that work we maintain a separate GitHub Release pinned to
+        # a floating `latest` tag, and re-point it on every version bump.
+        #
+        # The delete-and-recreate dance is required because `gh release edit`
+        # can't cleanly re-attach assets, and releases tied to moving tags
+        # are finicky. --latest=false keeps the real versioned release
+        # (v0.1.0 etc) as the one GitHub shows as "Latest" in the UI; the
+        # `latest` release here is purely a stable URL holder.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest
+          git push -f origin latest
+          # Delete the old pointer release if it exists. `|| true` because
+          # the very first release run won't have one to delete.
+          gh release delete latest --yes || true
+          gh release create latest \
+            --title "Latest" \
+            --notes "Auto-updated pointer to the most recent release. Do not download from here — use the versioned release instead." \
+            --latest=false \
+            latest.json
