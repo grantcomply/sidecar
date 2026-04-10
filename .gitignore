@@ -11,3 +11,13 @@ __pycache__/
 
 # Environment
 .env
+
+# PyInstaller build artifacts
+build/output/
+dist/
+# Transient folder PyInstaller creates next to the spec. Note: we DO want
+# to track serato-sidecar.spec itself (it is source), plus build/installer.iss
+# and build/generate_icons.py. Only the PyInstaller work dir is ignored.
+/build/SeratoSidecar/
+*.pyz
+
