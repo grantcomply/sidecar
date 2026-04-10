@@ -1,0 +1,13 @@
+# Cache
+track_cache.json
+
+# Legacy CSV exports
+crate-exports/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
