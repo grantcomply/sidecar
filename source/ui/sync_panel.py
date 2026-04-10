@@ -1,13 +1,15 @@
 import customtkinter as ctk
 from tkinter import filedialog
 
+from source import __version__
+
 
 class SettingsDialog(ctk.CTkToplevel):
     """Modal settings dialog for Serato sync configuration."""
 
     def __init__(self, master, default_path: str, on_sync=None, **kwargs):
         super().__init__(master, **kwargs)
-        self.title("Settings")
+        self.title(f"Settings — Serato Sidecar v{__version__}")
         self.geometry("600x220")
         self.resizable(False, False)
         self.transient(master)

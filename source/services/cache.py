@@ -1,7 +1,7 @@
 """
 JSON cache for parsed track metadata.
 
-Reads/writes a single track_cache.json file in the project root,
+Reads/writes a single track_cache.json file in the user data directory,
 replacing the old per-crate CSV export approach (see ADR-007).
 """
 import json
@@ -9,16 +9,42 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from source.config import PROJECT_ROOT
+from source.config import PROJECT_ROOT, user_data_dir
 
 logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 1
 
+_CACHE_FILENAME = "track_cache.json"
+_legacy_cache_migrated = False
+
+
+def _migrate_legacy_cache(target: Path) -> None:
+    """One-time migration of the old project-root track_cache.json.
+
+    If a legacy cache exists at PROJECT_ROOT and the target in user data dir
+    does not, move it. Runs at most once per process.
+    """
+    global _legacy_cache_migrated
+    if _legacy_cache_migrated:
+        return
+    _legacy_cache_migrated = True
+
+    legacy = Path(PROJECT_ROOT) / _CACHE_FILENAME
+    if not legacy.is_file() or target.exists():
+        return
+    try:
+        legacy.replace(target)
+        logger.info("Migrated legacy cache from %s to %s", legacy, target)
+    except OSError as e:
+        logger.warning("Failed to migrate legacy cache: %s", e)
+
 
 def get_cache_path() -> Path:
-    """Return the path to the track cache file in the project root."""
-    return Path(PROJECT_ROOT) / "track_cache.json"
+    """Return the path to the track cache file in the user data directory."""
+    path = user_data_dir() / _CACHE_FILENAME
+    _migrate_legacy_cache(path)
+    return path
 
 
 def load_cache(path: Path | None = None) -> dict | None:
