@@ -1,0 +1,18 @@
+{
+    "pythonVersion": "3.11",
+    "pythonPlatform": "Windows",
+    "pythonPath": "C:/Users/grant/.pyenv/pyenv-win/versions/3.11.9/python.exe",
+    "include": [
+        "source",
+        "main.py",
+        "build"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        "build/SeratoSidecar",
+        "build/output",
+        "dist"
+    ],
+    "reportMissingImports": "error",
+    "reportMissingTypeStubs": "none"
+}

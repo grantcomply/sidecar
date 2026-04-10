@@ -1,14 +1,22 @@
+import logging
+import threading
 import tkinter as tk
+import webbrowser
+from typing import Callable, Optional
+
 import customtkinter as ctk
-from source.config import get_subcrates_dir, save_subcrates_dir
+from source.config import _load_env, get_subcrates_dir, save_subcrates_dir
 from source.models.track import Track
 from source.models.library import TrackLibrary
 from source.services.suggestion_engine import get_suggestions
 from source.services.crate_sync import sync_crates
+from source.services.updater import UpdateInfo
 from source.ui.sync_panel import SettingsDialog
 from source.ui.track_detail import NowPlayingDashboard
 from source.ui.suggestion_panel import SuggestionPanel
 from source.ui.session_panel import SessionPanel
+
+logger = logging.getLogger(__name__)
 
 SASH_COLOR = "#333333"
 SASH_WIDTH = 5
@@ -26,9 +34,11 @@ class DJTrackSelectorApp(ctk.CTk):
         self._current_track = None
         self._settings_dialog = None
         self._toast_after_id = None
+        self._toast_action_btn: Optional[ctk.CTkButton] = None
 
         self._build_ui()
         self._try_load_existing()
+        self._check_for_updates_async()
 
     # ── UI construction ──
 
@@ -42,10 +52,14 @@ class DJTrackSelectorApp(ctk.CTk):
         top_bar.grid_columnconfigure(0, weight=1)
         top_bar.grid_propagate(False)
 
+        # Inner frame holds the toast label + optional action button side-by-side.
+        self._toast_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
+        self._toast_frame.grid(row=0, column=0, sticky="w", padx=5)
+
         self.toast_label = ctk.CTkLabel(
-            top_bar, text="", font=ctk.CTkFont(size=12), anchor="w",
+            self._toast_frame, text="", font=ctk.CTkFont(size=12), anchor="w",
         )
-        self.toast_label.grid(row=0, column=0, sticky="w", padx=5)
+        self.toast_label.grid(row=0, column=0, sticky="w")
 
         settings_btn = ctk.CTkButton(
             top_bar, text="\u2699", width=32, height=32,
@@ -108,12 +122,92 @@ class DJTrackSelectorApp(ctk.CTk):
 
     # ── Toast notifications ──
 
-    def _show_toast(self, text: str, color: str = "#28a745", duration: int = 4000):
+    def _show_toast(
+        self,
+        text: str,
+        color: str = "#28a745",
+        duration: int = 4000,
+        action_label: Optional[str] = None,
+        action_callback: Optional[Callable[[], object]] = None,
+    ):
+        """Show a transient message in the top bar.
+
+        If ``action_label`` and ``action_callback`` are both provided, an
+        inline button is rendered next to the message; clicking it invokes
+        the callback. The button is removed when the toast expires or the
+        next toast is shown.
+        """
         if self._toast_after_id:
             self.after_cancel(self._toast_after_id)
+            self._toast_after_id = None
+        self._clear_toast_action()
+
         self.toast_label.configure(text=text, text_color=color)
-        self._toast_after_id = self.after(
-            duration, lambda: self.toast_label.configure(text=""),
+
+        if action_label and action_callback is not None:
+            btn = ctk.CTkButton(
+                self._toast_frame,
+                text=action_label,
+                width=90,
+                height=24,
+                font=ctk.CTkFont(size=11),
+                command=action_callback,
+            )
+            btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
+            self._toast_action_btn = btn
+
+        self._toast_after_id = self.after(duration, self._clear_toast)
+
+    def _clear_toast(self):
+        self.toast_label.configure(text="")
+        self._clear_toast_action()
+        self._toast_after_id = None
+
+    def _clear_toast_action(self):
+        if self._toast_action_btn is not None:
+            try:
+                self._toast_action_btn.destroy()
+            except tk.TclError:
+                pass
+            self._toast_action_btn = None
+
+    # ── Auto-update check ──
+
+    def _check_for_updates_async(self):
+        """Kick off a background update check unless disabled in settings.
+
+        Reads ``CHECK_FOR_UPDATES`` from ``settings.env``. The check is
+        enabled by default; only the literal string ``"false"`` (case-
+        insensitive) disables it. Network I/O runs on a daemon thread so a
+        slow or offline DNS lookup never delays the UI.
+        """
+        env = _load_env()
+        setting = env.get("CHECK_FOR_UPDATES", "").strip().lower()
+        if setting == "false":
+            logger.info("Update check disabled via CHECK_FOR_UPDATES=false")
+            return
+
+        def _run():
+            # Imported inside the thread so a hypothetical import error in the
+            # updater module never blocks app startup.
+            from source import __version__
+            from source.services.updater import check_for_update
+
+            update = check_for_update(__version__)
+            if update is not None:
+                self.after(0, lambda: self._show_update_toast(update))
+
+        thread = threading.Thread(target=_run, daemon=True, name="update-check")
+        thread.start()
+
+    def _show_update_toast(self, update: UpdateInfo):
+        """Render the 'update available' toast with a Download button."""
+        self._show_toast(
+            f"Version {update.version} is available.",
+            color="#4AB8D4",
+            duration=15000,
+            action_label="Download",
+            action_callback=lambda: webbrowser.open(update.url),
         )
 
     # ── Settings dialog ──

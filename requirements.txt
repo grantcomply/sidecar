@@ -1,3 +1,4 @@
 customtkinter>=5.2.0
 mutagen>=1.47.0
+packaging>=23.0
 platformdirs>=4.0.0
