@@ -1,12 +1,17 @@
 """Waveform amplitude data generation from audio files.
 
-Produces a list of normalised floats (0.0-1.0) representing the visual
-amplitude at evenly spaced points across the file.  Uses raw byte
-sampling — no numpy or pydub dependency.  Results are cached in an
-LRU-style dict so repeated plays don't re-read from disk.
+Produces a list of normalised floats (0.0-1.0) representing the RMS
+amplitude at evenly spaced points across the track.  Uses pygame to
+decode audio into PCM samples, giving an accurate waveform that reflects
+the actual music dynamics — quiet breakdowns, loud drops, and builds
+are clearly visible.
+
+Results are cached in an LRU-style dict so repeated plays don't
+re-decode from disk.
 """
 
 import logging
+import math
 import struct
 import threading
 from collections import OrderedDict
@@ -82,101 +87,117 @@ class WaveformGenerator:
     # ── Core generation logic ──
 
     def _generate_waveform(self, file_path: str, num_bars: int) -> list[float]:
-        """Read the file and produce amplitude samples.
+        """Decode the audio and compute RMS amplitude per chunk.
 
-        For WAV files the actual PCM samples are read.  For all other
-        formats raw byte values are sampled — the result is approximate
-        but visually adequate for a preview waveform.
+        Uses pygame.mixer.Sound to decode the file into raw 16-bit PCM,
+        then computes the root-mean-square amplitude for each of *num_bars*
+        evenly-spaced chunks.  This produces a waveform that accurately
+        reflects the music dynamics — breakdowns, drops, and builds are
+        clearly visible.
+
+        Falls back to raw byte sampling if pygame is unavailable.
         """
         path = Path(file_path)
         try:
-            suffix = path.suffix.lower()
-            if suffix == ".wav":
-                return self._wav_waveform(path, num_bars)
+            return self._pcm_waveform(path, num_bars)
+        except Exception as exc:
+            logger.debug("PCM waveform failed for %s: %s — trying raw bytes", path.name, exc)
+
+        # Fallback: raw byte sampling (less accurate but no dependencies)
+        try:
             return self._raw_byte_waveform(path, num_bars)
         except Exception as exc:
             logger.warning("Waveform generation failed for %s: %s", path.name, exc)
-            # Fallback: flat midline waveform
             return [0.5] * num_bars
 
-    # ── WAV: read actual PCM samples ──
+    # ── PCM waveform via pygame (accurate) ──
 
     @staticmethod
-    def _wav_waveform(path: Path, num_bars: int) -> list[float]:
-        """Extract amplitude from a WAV file by reading PCM sample values."""
-        with open(path, "rb") as f:
-            header = f.read(44)
-            if len(header) < 44:
+    def _pcm_waveform(path: Path, num_bars: int) -> list[float]:
+        """Decode audio to PCM via pygame and compute amplitude per chunk.
+
+        Produces a DJ-useful waveform where breakdowns, drops, and builds
+        are clearly distinguishable even on heavily mastered/limited
+        tracks.  The approach:
+
+        1. Divide the decoded PCM into *num_bars* chunks
+        2. Within each chunk, compute RMS on short ~10ms sub-windows
+        3. Take the peak sub-window RMS for each bar (preserves transients)
+        4. Convert to dB scale — this is the key step that expands the
+           visual contrast between "almost as loud" and "slightly quieter"
+           sections in modern brickwall-limited music
+        5. Map dB values to 0.0-1.0 with a usable floor of -40 dB
+        """
+        try:
+            import pygame.mixer  # noqa: WPS433
+        except ImportError:
+            raise RuntimeError("pygame not available")
+
+        # Ensure mixer is initialised (may be called before AudioPlayer
+        # starts, or on a background thread after mixer.quit())
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+
+        snd = pygame.mixer.Sound(str(path))
+        try:
+            raw = snd.get_raw()
+            if not raw or len(raw) < 4:
                 return [0.5] * num_bars
 
-            # Read basic WAV header fields
-            # bytes 22-23: num channels, 34-35: bits per sample
-            num_channels = struct.unpack_from("<H", header, 22)[0]
-            bits_per_sample = struct.unpack_from("<H", header, 34)[0]
-            bytes_per_sample = bits_per_sample // 8
-
-            # Read all data after header
-            f.seek(0, 2)
-            file_size = f.tell()
-            data_size = file_size - 44
-            if data_size <= 0:
-                return [0.5] * num_bars
-
-            frame_size = bytes_per_sample * num_channels
-            total_frames = data_size // frame_size
+            # pygame mixer: 16-bit signed stereo @ 44100 Hz → 4 bytes/frame
+            bytes_per_frame = 4
+            total_frames = len(raw) // bytes_per_frame
             if total_frames < num_bars:
                 return [0.5] * num_bars
 
             frames_per_bar = total_frames // num_bars
+
+            # Short sub-windows (~10ms = 441 frames) capture individual
+            # kick hits and transients rather than averaging them out.
+            sub_window_frames = min(441, frames_per_bar)
+            step_bytes = sub_window_frames * bytes_per_frame
             amplitudes: list[float] = []
 
-            # Determine struct format for one sample
-            if bytes_per_sample == 2:
-                fmt = "<h"  # signed 16-bit
-                max_val = 32768.0
-            elif bytes_per_sample == 3:
-                fmt = None  # handled specially
-                max_val = 8388608.0
-            else:
-                # 8-bit or exotic — fall back to raw byte sampling
-                return WaveformGenerator._raw_byte_waveform(path, num_bars)
-
             for bar in range(num_bars):
-                offset = 44 + bar * frames_per_bar * frame_size
-                # Read a small chunk and average
-                chunk_frames = min(frames_per_bar, 512)
-                f.seek(offset)
-                raw = f.read(chunk_frames * frame_size)
-                if not raw:
-                    amplitudes.append(0.0)
-                    continue
+                bar_start = bar * frames_per_bar * bytes_per_frame
+                bar_end = bar_start + frames_per_bar * bytes_per_frame
 
-                total = 0.0
-                count = 0
-                pos = 0
-                while pos + bytes_per_sample <= len(raw):
-                    if fmt is not None:
-                        val = struct.unpack_from(fmt, raw, pos)[0]
-                    else:
-                        # 24-bit: unpack 3 bytes as signed
-                        b = raw[pos:pos + 3]
-                        val = int.from_bytes(b, "little", signed=True)
-                    total += abs(val)
-                    count += 1
-                    pos += frame_size  # skip to next frame (skip extra channels)
+                peak_rms = 0.0
+                pos = bar_start
+                while pos < bar_end:
+                    window_end = min(pos + step_bytes, bar_end)
+                    chunk = raw[pos:window_end]
 
-                amplitudes.append(total / (count * max_val) if count else 0.0)
+                    sum_sq = 0.0
+                    count = 0
+                    for i in range(0, len(chunk) - 1, bytes_per_frame):
+                        sample = struct.unpack_from("<h", chunk, i)[0]
+                        sum_sq += sample * sample
+                        count += 1
 
-        return _normalise(amplitudes)
+                    if count > 0:
+                        rms = math.sqrt(sum_sq / count) / 32768.0
+                        if rms > peak_rms:
+                            peak_rms = rms
 
-    # ── Raw byte sampling (MP3, FLAC, AIFF, etc.) ──
+                    pos = window_end
+
+                amplitudes.append(peak_rms)
+
+        finally:
+            del snd
+
+        return _to_db_normalised(amplitudes)
+
+    # ── Raw byte sampling fallback (MP3, FLAC, AIFF, etc.) ──
 
     @staticmethod
     def _raw_byte_waveform(path: Path, num_bars: int) -> list[float]:
         """Sample raw byte amplitudes at regular intervals.
 
         Skips known headers (ID3v2 for MP3) so the samples come from
-        actual audio frame data rather than metadata.
+        actual audio frame data rather than metadata.  This is a fallback
+        when pygame is unavailable.
         """
         file_size = path.stat().st_size
         start_offset = _detect_audio_start(path)
@@ -186,7 +207,6 @@ class WaveformGenerator:
             return [0.5] * num_bars
 
         chunk_size = max(data_size // num_bars, 1)
-        # Read a small window at each sample point for averaging
         sample_window = min(chunk_size, 1024)
 
         amplitudes: list[float] = []
@@ -198,7 +218,6 @@ class WaveformGenerator:
                 if not raw:
                     amplitudes.append(0.0)
                     continue
-                # Average absolute deviation from 128 (unsigned byte midpoint)
                 total = sum(abs(b - 128) for b in raw)
                 amplitudes.append(total / (len(raw) * 128.0))
 
@@ -215,7 +234,6 @@ def _detect_audio_start(path: Path) -> int:
         with open(path, "rb") as f:
             magic = f.read(10)
             if len(magic) >= 10 and magic[:3] == b"ID3":
-                # ID3v2 header: bytes 6-9 are synchsafe size
                 size_bytes = magic[6:10]
                 size = (
                     (size_bytes[0] & 0x7F) << 21
@@ -226,8 +244,37 @@ def _detect_audio_start(path: Path) -> int:
                 return 10 + size
     except OSError:
         pass
-    # Generic: skip first 128 bytes (conservative for FLAC, AIFF headers)
     return 128
+
+
+def _to_db_normalised(values: list[float], floor_db: float = -40.0) -> list[float]:
+    """Convert linear amplitudes to dB scale, then map to 0.0-1.0.
+
+    This is the key transformation for getting a useful waveform from
+    heavily mastered music.  A -3dB difference (barely perceptible as
+    a volume change) becomes a large visual change on a dB-scaled
+    waveform, making breakdowns, builds, and drops clearly visible
+    even on brickwall-limited tracks.
+
+    *floor_db* sets the silence threshold — anything below this is
+    drawn at minimum height.  -40 dB works well for music (true
+    silence and very quiet room tone disappear; any musical content
+    is visible).
+    """
+    if not values:
+        return values
+
+    db_values: list[float] = []
+    for v in values:
+        if v <= 0:
+            db_values.append(floor_db)
+        else:
+            db = 20.0 * math.log10(v)
+            db_values.append(max(db, floor_db))
+
+    # Map [floor_db .. 0dB] → [0.0 .. 1.0]
+    db_range = abs(floor_db)
+    return [max(0.0, (db - floor_db) / db_range) for db in db_values]
 
 
 def _normalise(values: list[float]) -> list[float]:
