@@ -7,7 +7,11 @@
       "Bash(python -c \"import py_compile; py_compile.compile\\('source/ui/suggestion_panel.py', doraise=True\\); print\\('suggestion_panel.py OK'\\)\")",
       "Bash(python -c \"import py_compile; py_compile.compile\\('source/app.py', doraise=True\\); print\\('app.py OK'\\)\")",
       "Bash(pip install:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)"
     ]
   }
 }
