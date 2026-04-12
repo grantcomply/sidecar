@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import py_compile; py_compile.compile\\('source/services/audio_player.py', doraise=True\\); print\\('audio_player.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('source/services/waveform.py', doraise=True\\); print\\('waveform.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('source/ui/waveform_widget.py', doraise=True\\); print\\('waveform_widget.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('source/ui/suggestion_panel.py', doraise=True\\); print\\('suggestion_panel.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('source/app.py', doraise=True\\); print\\('app.py OK'\\)\")",
+      "Bash(pip install:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

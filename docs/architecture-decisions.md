@@ -194,3 +194,23 @@
   - Con: Unsigned binaries produce a scary one-time dialog on both platforms — requires a clear README explanation to avoid users bouncing.
   - Con: The roll-your-own updater offers no silent in-place upgrade (user has to click Download and run the installer). Acceptable trade-off for this scale.
   - Con: macOS builds are produced by CI but currently unverified on a real Mac — first real-world Mac user will be the de facto QA.
+
+### ADR-009: Audio Preview with pygame and Raw Byte Waveforms
+- **Status:** Proposed
+- **Date:** 2026-04-12
+- **Context:** DJs want to audition suggested tracks before committing to play them. This requires audio playback with seek capability and a visual waveform for navigation. The solution must be cross-platform (Windows + macOS), bundle with PyInstaller, and not require users to install external software (like VLC or ffmpeg).
+- **Decision:**
+  1. **Playback engine: `pygame.mixer`** — Use only the mixer subsystem (no display init). Supports MP3, WAV, OGG, FLAC via SDL2. Mature PyInstaller hooks. Provides play, pause, stop, and seek. Chosen over `python-vlc` (requires VLC installed), `miniaudio` (less PyInstaller community knowledge), and `pyaudio` (raw PCM only).
+  2. **Waveform generation: raw byte sampling** — Sample raw file bytes at regular intervals to approximate amplitude. No audio decoding required, no new dependencies. Produces visually adequate waveforms for preview purposes. Higher-fidelity decoded waveforms (via numpy + pygame.sndarray) are a documented future upgrade path.
+  3. **Waveform caching: in-memory LRU (50 entries)** — No disk persistence. Regeneration takes ~50-100ms per file. Cache clears on library re-sync.
+  4. **Architecture: three new files** — `services/audio_player.py` (playback control), `services/waveform.py` (amplitude data), `ui/waveform_widget.py` (canvas rendering). `AudioPlayer` is instantiated once in `app.py` and passed to `SuggestionPanel` via constructor.
+  5. **UI pattern: expandable waveform below the suggestion row** — Play button added as a new column in the suggestion grid. Waveform appears in an expandable section below the playing row. Clicking the row still selects the track (play button click does not trigger selection).
+- **Consequences:**
+  - Pro: Single new dependency (`pygame`) with proven cross-platform and PyInstaller support.
+  - Pro: Waveform generation requires zero additional dependencies beyond pygame.
+  - Pro: Clean separation — playback service has no UI knowledge, waveform widget has no playback knowledge.
+  - Pro: Preview and selection are separate actions, matching DJ workflow expectations.
+  - Con: pygame adds ~3-5MB to the bundle size.
+  - Con: Raw byte waveforms are approximate — visually useful but not sample-accurate. Acceptable for preview; upgrade path documented.
+  - Con: pygame.mixer has limited format support compared to ffmpeg-based solutions (no AAC/M4A). If users have AAC files this will need revisiting.
+  - See: `docs/audio-preview-design.md` for full design.

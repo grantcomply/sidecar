@@ -9,6 +9,7 @@ from source.config import _load_env, get_subcrates_dir, save_subcrates_dir
 from source.models.track import Track
 from source.models.library import TrackLibrary
 from source.services.suggestion_engine import get_suggestions
+from source.services.audio_player import AudioPlayer
 from source.services.crate_sync import sync_crates
 from source.services.updater import UpdateInfo
 from source.ui.sync_panel import SettingsDialog
@@ -36,9 +37,14 @@ class DJTrackSelectorApp(ctk.CTk):
         self._toast_after_id = None
         self._toast_action_btn: Optional[ctk.CTkButton] = None
 
+        self._audio_player = AudioPlayer()
+
         self._build_ui()
         self._try_load_existing()
         self._check_for_updates_async()
+
+        # Ensure clean shutdown of audio subsystem
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI construction ──
 
@@ -89,6 +95,7 @@ class DJTrackSelectorApp(ctk.CTk):
             self.bottom_pane,
             on_select=self._on_suggestion_selected,
             on_filter_change=self._on_crate_filter_changed,
+            audio_player=self._audio_player,
         )
         self.bottom_pane.add(self.suggestion_panel, stretch="always")
 
@@ -107,6 +114,11 @@ class DJTrackSelectorApp(ctk.CTk):
         w = self.bottom_pane.winfo_width()
         if w > 100:
             self.bottom_pane.sash_place(0, w // 2, 0)
+
+    def _on_close(self) -> None:
+        """Clean up resources and close the application."""
+        self._audio_player.shutdown()
+        self.destroy()
 
     # ── Startup ──
 
@@ -247,6 +259,8 @@ class DJTrackSelectorApp(ctk.CTk):
         if error:
             msg, color = f"Sync failed: {error}", "#dc3545"
         else:
+            # Stop any audio preview — the library is about to change
+            self._audio_player.stop()
             self.library.load_from_cache()
             self.suggestion_panel.set_crates(self.library.crate_names)
             self.suggestion_panel.set_genres(self.library.genre_names)

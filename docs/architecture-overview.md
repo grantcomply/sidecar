@@ -58,6 +58,8 @@ Business logic and external integrations. No UI knowledge.
 | `crate_sync.py` | Background thread wrapper for crate export |
 | `cache.py` | JSON cache read/write for the in-memory track library |
 | `updater.py` | Fetches release manifest from GitHub and returns `UpdateInfo` if a newer version exists. Called from a background daemon thread on app startup. |
+| `audio_player.py` | *(Proposed)* Wraps `pygame.mixer.music` for audio preview playback with play/pause/stop/seek. Single instance owned by `app.py`. See ADR-009. |
+| `waveform.py` | *(Proposed)* Generates visual amplitude data from audio files via raw byte sampling. In-memory LRU cache. See ADR-009. |
 
 ### UI (`ui/`)
 Presentation layer. CustomTkinter widgets and panels.
@@ -70,6 +72,7 @@ Presentation layer. CustomTkinter widgets and panels.
 | `sync_panel.py` | Settings dialog for Serato folder and sync |
 | `tooltip.py` | Reusable hover tooltip widget |
 | `utils.py` | Shared UI helper functions |
+| `waveform_widget.py` | *(Proposed)* Canvas-based waveform display with seekable playhead for audio preview. See ADR-009. |
 
 ## Data Flow
 
