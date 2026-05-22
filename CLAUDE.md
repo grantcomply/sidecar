@@ -43,12 +43,15 @@ serato-sidecar/
 - **Track Comments Format:** `"4A - 7 - Banger - Fat Bass Vocal"` (key - energy - category - descriptors)
 
 ## Agent Workflow
-This project uses three specialized agents that collaborate:
-1. **Architect** (`architect.md`) — Designs architecture, maintains docs/, defines standards
-2. **Engineer** (`engineer.md`) — Implements code changes following architect's designs
-3. **Code Reviewer** (`code-reviewer.md`) — Reviews engineer's code for quality and standards compliance
+This project uses four specialized agents that collaborate:
+1. **Architect** (`.claude/agents/architect.md`) — Designs architecture, maintains docs/, defines standards
+2. **UI Designer** (`.claude/agents/ui-designer.md`) — Designs the CustomTkinter desktop UI, maintains `docs/ui-design-guide.md`, produces design briefs and audits
+3. **Engineer** (`.claude/agents/engineer.md`) — Implements code changes following architect and UI designer guidance
+4. **Code Reviewer** (`.claude/agents/code-reviewer.md`) — Reviews engineer's code for quality and standards compliance
 
-**Workflow:** Architect designs → Engineer implements → Code Reviewer reviews → Engineer fixes
+**Workflow:** Architect + UI Designer design → Engineer implements → Code Reviewer reviews → Engineer fixes
+
+**Planning a feature:** Run `/feature-request <description>` to produce an architect blueprint, implementation plan, and UI design brief in `plans/<slug>-<YYYY-MM>/`.
 
 ## Development Commands
 ```bash

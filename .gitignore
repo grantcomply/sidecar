@@ -12,6 +12,9 @@ __pycache__/
 # Environment
 .env
 
+# Agent working memory — per-machine state, not project source
+.claude/agent-memory/
+
 # PyInstaller build artifacts
 build/output/
 dist/
