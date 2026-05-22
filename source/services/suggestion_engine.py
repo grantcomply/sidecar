@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from source.models.track import Track
 from source.models.library import TrackLibrary
-from source.services.camelot import compatibility_score, is_compatible
+from source.services.camelot import classify, compatibility_score, HarmonicTier
 from source.config import (
     SUGGESTION_WEIGHTS,
     BPM_MAX_DIFF,
@@ -17,12 +19,13 @@ class ScoredTrack:
     key_score: float
     energy_score: float
     bpm_score: float
+    harmonic_tier: HarmonicTier
 
 
 def get_suggestions(current: Track, library: TrackLibrary,
-                    exclude_paths: set = None,
-                    allowed_crates: set = None,
-                    allowed_genres: set = None) -> list[ScoredTrack]:
+                    exclude_paths: set[str] | None = None,
+                    allowed_crates: set[str] | None = None,
+                    allowed_genres: set[str] | None = None) -> list[ScoredTrack]:
     """Score and rank all compatible tracks against the current track."""
     results = []
     w = SUGGESTION_WEIGHTS
@@ -44,14 +47,14 @@ def get_suggestions(current: Track, library: TrackLibrary,
         if allowed_genres is not None and track.genre not in allowed_genres:
             continue
 
-        # Hard filter: must be harmonically compatible
+        # Harmonic filter: offer any track with a usable harmonic relationship.
+        # compatibility_score > 0 means some tier matched; 0.0 means unrelated. See ADR-010.
         if not current.camelot_key or not track.camelot_key:
             continue
-        if not is_compatible(current.camelot_key, track.camelot_key):
-            continue
-
-        # Key score
         key_score = compatibility_score(current.camelot_key, track.camelot_key)
+        if key_score <= 0:
+            continue
+        harmonic_tier = classify(current.camelot_key, track.camelot_key)
 
         # Energy score
         if current.energy and track.energy:
@@ -81,6 +84,7 @@ def get_suggestions(current: Track, library: TrackLibrary,
             key_score=key_score,
             energy_score=energy_score,
             bpm_score=bpm_score,
+            harmonic_tier=harmonic_tier,
         ))
 
     results.sort(key=lambda s: s.total_score, reverse=True)

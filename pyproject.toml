@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Project root on sys.path so tests can `from source... import ...`.
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

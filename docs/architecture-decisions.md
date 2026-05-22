@@ -40,7 +40,7 @@
   - Con: Full reload on every sync (no incremental updates)
 
 ### ADR-003: Weighted Scoring Algorithm for Track Suggestions
-- **Status:** Accepted (inherited)
+- **Status:** Accepted (inherited) — the hard-filter clause is superseded by ADR-010 (the weighted-linear-combination decision otherwise stands).
 - **Date:** 2026-04-02
 - **Context:** Need to rank track compatibility. The scoring considers harmonic key compatibility, energy flow, BPM proximity, and category affinity.
 - **Decision:** Use a weighted linear combination with configurable weights in config.py. Hard filter on harmonic compatibility (non-compatible tracks are excluded entirely).
@@ -214,3 +214,78 @@
   - Con: Raw byte waveforms are approximate — visually useful but not sample-accurate. Acceptable for preview; upgrade path documented.
   - Con: pygame.mixer has limited format support compared to ffmpeg-based solutions (no AAC/M4A). If users have AAC files this will need revisiting.
   - See: `docs/audio-preview-design.md` for full design.
+
+---
+
+### ADR-010: Tiered Harmonic Compatibility Scoring (supersedes the hard-filter clause of ADR-003)
+
+- **Status:** Accepted
+- **Date:** 2026-05-22
+- **Revised:** 2026-05-22 (post-implementation) — Decision point 4 corrected to a **symmetric** diagonal tier; Risk R2 repurposed. The original draft's asymmetric-diagonal intent was found to be mathematically unsatisfiable during implementation; see the Resolution note below.
+- **Supersedes:** ADR-003's clause "Hard filter on harmonic compatibility (non-compatible tracks are excluded entirely)". The weighted-linear-combination decision in ADR-003 otherwise stands.
+
+#### Context
+
+ADR-003 chose a hard harmonic filter: any non-compatible track is excluded before scoring. In practice this surfaces only 3 of the 24 keys' relationships and produces a thin suggestion list. DJs want a wider pool of harmonically *usable* tracks ranked by how safe the harmonic move is, so they can build longer, more varied sets.
+
+#### Decision
+
+**1. Replace the 3-value `compatibility_score` with a 7-tier model.** `compatibility_score(key1, key2)` continues to return a `0.0–1.0` float so the existing `total_score` blend and the `%` display work unchanged. The new return values:
+
+| Relationship | Score | Source |
+|--------------|-------|--------|
+| Perfect match (identical) | `1.0` | unchanged |
+| Adjacent (±1 number, same letter) | `0.8` | unchanged |
+| Relative (A/B swap, same number) | `0.7` | unchanged |
+| Diagonal (valid direction) | `0.62` | new — research range 0.6–0.65, midpoint chosen |
+| Energy ±2 (wheel distance 2, same letter) | `0.57` | new — research range 0.55–0.6, midpoint |
+| Semitone (wheel distance 5, same letter) | `0.47` | new — research range 0.45–0.5, midpoint |
+| Related (wheel distance 4, same letter) | `0.37` | new — research range 0.35–0.4, midpoint |
+| No harmonic relationship | `0.0` | unchanged |
+
+Midpoints of the researched ranges are chosen as the default values; they are tunable (see decision 3). The three legacy values (1.0 / 0.8 / 0.7) are preserved exactly so existing behaviour for those tiers does not regress.
+
+**2. Remove the hard filter; filter on `compatibility_score(...) > 0` instead.** The engine offers a track if it has **any** harmonic relationship (score > 0). Truly unrelated keys still score `0.0` and stay filtered. `is_compatible()` is **deleted**, not redefined.
+
+Rationale for deleting rather than redefining: `is_compatible()` is used in exactly one place — `suggestion_engine.py`. A predicate named `is_compatible` that returns `True` for a tritone-related "related ±4" pair would be a misleading name. The engine already computes `compatibility_score()` one line later — calling it twice (once as a boolean gate, once for the score) is wasteful. The clean change is: compute the score once, gate on `> 0`.
+
+**3. New tier scores live in `config.py` as a named, ordered structure.** Consistent with `SUGGESTION_WEIGHTS` and the thresholds already there and with the coding standard "all tuneable values belong in `config.py`". The structure is a mapping from a `HarmonicTier` enum to a float. `camelot.py` imports it. The three legacy scores move into this structure too, so there is a single source of truth for all seven values.
+
+Rationale for an enum over bare string keys: the tier is also a UI label. An enum gives `camelot.py`, the engine, the tests, and the UI one shared vocabulary and prevents typo-keyed dict lookups. To break the `config.py` ↔ `camelot.py` import cycle (config keys its scores by the enum; camelot needs the scores), the `HarmonicTier` enum is defined in a small dependency-free leaf module `source/services/harmonic_tier.py` that both `config.py` and `camelot.py` import; `camelot.py` re-exports it for backward-compatible imports.
+
+**4. The DIAGONAL tier is a symmetric relationship, identified by a small explicit special-case inside `classify()`.** Harmonic *compatibility* — whether two tracks share enough notes to layer well — is inherently order-independent: it is a property of the unordered key *pair*, not of a play direction. Energy direction (boost vs drop) is a separate concern, already captured by the engine's independent `energy_score` axis (`suggestion_engine.py:57-63`); it does not belong in the Camelot score. The DIAGONAL tier is therefore symmetric, exactly like the other tiers.
+
+A valid diagonal is any `±1-number-with-letter-swap` pair drawn from the `{(B,+1), (A,−1)}` family — that is, the move from the source key is either "B-letter, number step +1" or "A-letter, number step −1" (all number steps wrap mod 12, 12 ↔ 1). The four research examples are classified as follows:
+
+- `8B→9A` — `(B,+1)` — **DIAGONAL**.
+- `8A→7B` — `(A,−1)` — **DIAGONAL**.
+- `8B→7A` — `(B,−1)` — not in the family — `NONE` (dissonant).
+- `8A→9B` — `(A,+1)` — not in the family — `NONE` (dissonant).
+
+The `{(B,+1), (A,−1)}` family is **closed under reversal**: reversing a `(B,+1)` move yields an `(A,−1)` move and vice versa (e.g. the reverse of `8B→9A` is `9A→8B`, which is `(A,−1)` — itself a valid diagonal). The reverse of a dissonant pair is likewise dissonant (`8B→7A` and `7A→8B` are both outside the family). Consequently the diagonal relation — and therefore the **whole** `compatibility_score` function — is **symmetric**: `compatibility_score(k1, k2) == compatibility_score(k2, k1)` for every key pair. This matches the harmonic reality and is verified by the symmetry tests in `tests/services/test_camelot.py`.
+
+`get_suggestions()` calls `compatibility_score(current.camelot_key, track.camelot_key)` (current first, candidate second). Argument order is harmless to the harmonic score because the function is symmetric; it is retained only for readability and to keep the call site's intent ("score the move from current to candidate") explicit.
+
+**5. `MAX_SUGGESTIONS` raised to 60.** Widening the filter from 3 relationships to ~7 roughly doubles-to-triples the candidate pool. The previous cap of 30 would silently hide most newly-eligible tracks. 60 is an interim default for a 200–500 track hobby library, revisited after live use.
+
+#### Resolution note (2026-05-22, post-implementation)
+
+The original draft of this ADR was internally contradictory. Decision point 4 specified a *symmetric* diagonal algorithm (the `{(B,+1), (A,−1)}` family above), while Risk R2 simultaneously demanded the diagonal be *asymmetric* — that `compatibility_score("9A","8B")` return `0.0` as "the dissonant reverse" of the valid `8B→9A`.
+
+During implementation the engineer and the code-reviewer independently proved this asymmetric requirement unsatisfiable. A distance-1 letter-swap move is fully characterised by `(source-letter, signed-step)`. The four named research examples pin the valid set to exactly `{(B,+1), (A,−1)}`. The reverse of `8B→9A` is `9A→8B`, which is an `(A,−1)` move — the *same structural case* as the named-valid example `8A→7B`. No rule consistent with the four research examples can mark `9A→8B` invalid; the diagonal relation is necessarily symmetric. R2 conflated "the reverse direction" with "a different key": the research statement "8B→7A is dissonant" concerns the pair `{8B, 7A}`, a genuinely different pair from `{8B, 9A}` — not a reverse-direction effect. Energy boost-vs-drop direction is handled by the separate `energy_score` axis, not by the harmonic score.
+
+Decision point 4 has been corrected above to formally adopt the symmetric diagonal — the only internally-consistent and harmonically-correct option. The shipped code (`classify()` / `compatibility_score()` in `source/services/camelot.py`) and its tests are correct and unchanged; this ADR was revised to match and endorse them. Risk R2 has been repurposed (see Consequences / risks below).
+
+#### Consequences
+
+- Pro: Suggestion pool widens substantially; DJs see harmonically-usable tracks they previously never saw.
+- Pro: Scoring stays a transparent, tunable lookup; the `%` display and tooltip keep working with no UI-contract change.
+- Pro: `compatibility_score` is fully symmetric — `compatibility_score(a, b) == compatibility_score(b, a)` for every key pair. There is no surprising per-tier asymmetry to remember, document defensively, or accidentally "fix". This matches the harmonic reality (compatibility is a property of an unordered pair) and keeps the function trivially reasoned-about.
+- Pro: First real `tests/` directory lands, satisfying `docs/testing-strategy.md` Phase 1 priority for `camelot.py` and `suggestion_engine.py`.
+- Pro: `compatibility_score` is computed once per candidate instead of effectively twice (gate + score).
+- Con: Many more low-scoring rows (37%–62% blends) will appear. `_score_color()` was re-tuned to five buckets (see `ui-design-brief.md`) so the colour signal survives the wider score range.
+- Con: The score is non-monotonic in wheel distance (semitone at distance 5 outranks related at distance 4). The named tier table, not a distance curve, is the source of truth.
+
+#### Residual risk
+
+- **R2 (repurposed) — a future contributor wrongly assumes the diagonal must be directional.** "Diagonal" can intuitively read as a one-way move, and the original draft of this ADR made exactly that mistake. A contributor might "fix" the symmetric diagonal into an asymmetric one, reintroducing an unsatisfiable, harmonically-wrong rule. Mitigation: the symmetric behaviour is stated in Decision point 4 above, in the `compatibility_score` / `classify` docstrings in `source/services/camelot.py`, and is locked in by a dedicated symmetry test in `tests/services/test_camelot.py` that asserts `compatibility_score("9A","8B") == compatibility_score("8B","9A")`. Any directional "fix" breaks that test.

@@ -3,6 +3,8 @@ from pathlib import Path
 
 from platformdirs import user_data_dir as _platform_user_data_dir
 
+from source.services.harmonic_tier import HarmonicTier
+
 # source/ package directory and project root (one level up)
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SOURCE_DIR)
@@ -88,9 +90,22 @@ SUGGESTION_WEIGHTS = {
     "bpm": 0.20,
 }
 
+# Harmonic compatibility tier scores — see ADR-010.
+# Non-monotonic by design: SEMITONE (wheel distance 5) outranks RELATED (distance 4).
+HARMONIC_TIER_SCORES = {
+    HarmonicTier.PERFECT:  1.0,
+    HarmonicTier.ADJACENT: 0.8,
+    HarmonicTier.RELATIVE: 0.7,
+    HarmonicTier.DIAGONAL: 0.62,
+    HarmonicTier.ENERGY:   0.57,
+    HarmonicTier.SEMITONE: 0.47,
+    HarmonicTier.RELATED:  0.37,
+    HarmonicTier.NONE:     0.0,
+}
+
 BPM_MAX_DIFF = 20
 ENERGY_SEVERE_PENALTY_THRESHOLD = 3
-MAX_SUGGESTIONS = 30
+MAX_SUGGESTIONS = 60
 
 # Standard Camelot wheel colors — maps each key to a distinct hue
 CAMELOT_COLORS = {

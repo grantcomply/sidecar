@@ -4,7 +4,7 @@
 
 ## Current State
 
-**No automated tests exist.** This document defines the testing strategy to be implemented incrementally.
+**Initial test suite in place.** A `tests/` directory exists with unit coverage for the services Phase 1 priority modules `camelot.py` and `suggestion_engine.py` (delivered with ADR-010, both at ~100% line coverage). The remaining modules are still untested. This document defines the strategy for completing coverage incrementally.
 
 ## Test Framework
 
@@ -31,10 +31,10 @@
 ### Phase 1: Services (highest value, easiest to test)
 These are pure functions with no UI dependency:
 
-1. **`camelot.py`** — Harmonic compatibility logic
-   - All 24 keys × compatible/incompatible combinations
-   - Edge cases: wrapping (12A ↔ 1A), A/B flips
-   - Score values for each compatibility type
+1. **`camelot.py`** — Harmonic compatibility logic — **delivered** (`tests/services/test_camelot.py`)
+   - All seven harmonic tiers × representative key combinations
+   - Edge cases: wrapping (12A ↔ 1A), A/B flips, diagonal direction, invalid input
+   - Score values for each tier; `wheel_distance` symmetry
 
 2. **`comments_parser.py`** — Structured metadata parsing
    - Well-formed input: `"4A - 7 - Banger - Fat Bass Vocal"`
@@ -42,11 +42,11 @@ These are pure functions with no UI dependency:
    - Malformed energy: `"4A - high - Banger"`
    - Unknown categories, extra whitespace
 
-3. **`suggestion_engine.py`** — Scoring algorithm
-   - Score calculation for known inputs
-   - Filtering: excluded paths, allowed crates, incompatible keys
-   - Weight application
-   - Edge cases: empty library, no compatible tracks
+3. **`suggestion_engine.py`** — Scoring algorithm — **delivered** (`tests/services/test_suggestion_engine.py`)
+   - Score calculation for known inputs; `harmonic_tier` plumbing
+   - Filtering: self, excluded paths, allowed crates/genres, score-based harmonic gate
+   - Axis fallbacks: neutral energy/BPM, severe energy penalty
+   - Edge cases: empty library, unparseable keys, result cap and ordering
 
 ### Phase 2: Models
 4. **`track.py`** — CSV row parsing, field extraction
@@ -89,7 +89,7 @@ tests/
 
 ```python
 def test_<function>_<scenario>_<expected_result>():
-    """Example: test_is_compatible_adjacent_key_same_letter_returns_true"""
+    """Example: test_classify_adjacent_number_same_letter_returns_adjacent"""
 ```
 
 ## Running Tests

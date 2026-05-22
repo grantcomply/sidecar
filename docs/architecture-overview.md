@@ -52,7 +52,8 @@ Business logic and external integrations. No UI knowledge.
 
 | Component | Responsibility |
 |-----------|---------------|
-| `camelot.py` | Camelot wheel harmonic compatibility scoring |
+| `harmonic_tier.py` | `HarmonicTier` enum — shared harmonic-relationship vocabulary; dependency-free leaf module (breaks the `config.py` ↔ `camelot.py` cycle). See ADR-010. |
+| `camelot.py` | Camelot wheel harmonic compatibility — 7-tier harmonic model (`classify()` → `HarmonicTier`, `compatibility_score()` 0.0–1.0). See ADR-010. |
 | `suggestion_engine.py` | Weighted multi-factor track scoring algorithm |
 | `crate_parser.py` | Serato .crate binary file parser + ID3 metadata reader |
 | `crate_sync.py` | Background thread wrapper for crate export |
@@ -107,7 +108,7 @@ In-memory TrackLibrary
 6. **Bare `except Exception: pass`** — `app.py` silently swallows errors when checking dialog state. `crate_parser.py` silently returns empty metadata on any ID3 read failure.
 7. **No logging** — Diagnostic output still uses `print()` statements or toast notifications.
 8. **`os.path` everywhere** — Coding standards specify `pathlib.Path` but every file uses `os.path` for all path operations.
-9. **No tests** — Zero automated test coverage.
+9. **No tests** — ~~Zero automated test coverage.~~ **Partially resolved** — a `tests/` directory now exists with unit coverage for `camelot.py` and `suggestion_engine.py` (services Phase 1 priority, both at ~100% line coverage). See ADR-010 and `docs/testing-strategy.md`. The rest of the codebase remains untested.
 10. **Mutable default in dataclass** — `Track.crates: list = field(default_factory=list)` is correctly handled with `field()`, but the list is mutated in-place by `library.py:41`, coupling library loading to track state.
 
 ### What's Working Well

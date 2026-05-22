@@ -19,12 +19,27 @@ logger = logging.getLogger(__name__)
 
 
 def _score_color(score: float) -> str:
-    """Return a color based on match score (0-1)."""
+    """Return a colour for a blended ``total_score`` (0-1), in five bands.
+
+    Keyed off the blended ``total_score`` (key + energy + bpm), not the raw key
+    score, so a loose-key track with strong energy/BPM can still read as usable.
+    See ADR-010 and `docs/ui-design-brief.md` Decision 1.
+
+        >= 0.75  green  — strong match (Perfect / Adjacent)
+        >= 0.60  teal   — good match (Relative / Diagonal)
+        >= 0.48  yellow — usable (Energy ±2)
+        >= 0.38  orange — loose (Semitone)
+        else     red    — stretch (Related)
+    """
     if score >= 0.75:
         return "#28a745"
-    if score >= 0.55:
+    if score >= 0.60:
+        return "#20c997"
+    if score >= 0.48:
         return "#ffc107"
-    return "#fd7e14"
+    if score >= 0.38:
+        return "#fd7e14"
+    return "#dc6060"
 
 
 # ── Generic filter dropdown ──
@@ -361,8 +376,9 @@ class SuggestionPanel(ctk.CTkFrame):
             # Row click
             row.bind("<Button-1>", lambda e, t=track: self._select_track(t))
 
-            # Tooltip with score breakdown + crates
+            # Tooltip: harmonic tier name, then score breakdown, then crates.
             tip_lines = [
+                scored.harmonic_tier.value,
                 f"Key: {int(scored.key_score * 100)}%   "
                 f"Energy: {int(scored.energy_score * 100)}%   "
                 f"BPM: {int(scored.bpm_score * 100)}%",
