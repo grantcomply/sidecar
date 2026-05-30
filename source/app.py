@@ -314,11 +314,17 @@ class DJTrackSelectorApp(ctk.CTk):
         if not self.suggestion_panel.all_genres_selected:
             allowed_genres = self.suggestion_panel.selected_genres
 
+        key_offset = self.suggestion_panel.selected_key_offset
+        date_from, date_to = self.suggestion_panel.selected_date_range
+
         scored = get_suggestions(
             self._current_track,
             self.library,
             exclude_paths=self.session_panel.played_paths,
             allowed_crates=allowed_crates,
             allowed_genres=allowed_genres,
+            key_offset=key_offset,
+            date_from=date_from,
+            date_to=date_to,
         )
         self.suggestion_panel.set_suggestions(scored)

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-import tkinter as tk
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
 from source.config import CAMELOT_COLORS, energy_color
 from source.services.waveform import WaveformGenerator
+from source.ui.filter_bar import FilterBar
 from source.ui.tooltip import Tooltip
 from source.ui.utils import truncate
 from source.ui.waveform_widget import WaveformWidget
@@ -40,120 +40,6 @@ def _score_color(score: float) -> str:
     if score >= 0.38:
         return "#fd7e14"
     return "#dc6060"
-
-
-# ── Generic filter dropdown ──
-
-
-class FilterDropdown(ctk.CTkFrame):
-    """Dropdown with checkboxes, plus Select All / Deselect All."""
-
-    def __init__(self, master, label: str, on_change=None, **kwargs):
-        super().__init__(master, **kwargs)
-        self._on_change = on_change
-        self._label = label
-        self._vars: dict[str, tk.BooleanVar] = {}
-
-        self.grid_columnconfigure(0, weight=1)
-
-        self.toggle_btn = ctk.CTkButton(
-            self, text=f"Filter {label}: All Selected", height=28,
-            font=ctk.CTkFont(size=12),
-            fg_color=("gray75", "gray35"),
-            hover_color=("gray65", "gray45"),
-            text_color=("gray10", "gray90"),
-            anchor="w", command=self._toggle,
-        )
-        self.toggle_btn.grid(row=0, column=0, sticky="ew", padx=5, pady=(0, 2))
-
-        self.dropdown = ctk.CTkFrame(self)
-        self.dropdown.grid(row=1, column=0, sticky="ew", padx=5)
-        self.dropdown.grid_columnconfigure(0, weight=1)
-        self.dropdown.grid_remove()
-        self._open = False
-
-        btn_frame = ctk.CTkFrame(self.dropdown, fg_color="transparent")
-        btn_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 2))
-        btn_frame.grid_columnconfigure(0, weight=1)
-        btn_frame.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkButton(
-            btn_frame, text="Select All", height=24,
-            font=ctk.CTkFont(size=11),
-            fg_color="#28a745", hover_color="#218838",
-            command=self._select_all,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 2))
-
-        ctk.CTkButton(
-            btn_frame, text="Deselect All", height=24,
-            font=ctk.CTkFont(size=11),
-            fg_color="#dc3545", hover_color="#c82333",
-            command=self._deselect_all,
-        ).grid(row=0, column=1, sticky="ew", padx=(2, 0))
-
-        self.checklist = ctk.CTkScrollableFrame(self.dropdown, height=200)
-        self.checklist.grid(row=1, column=0, sticky="ew", padx=2, pady=(2, 5))
-        self.checklist.grid_columnconfigure(0, weight=1)
-
-    def set_items(self, names: list[str]):
-        self._vars.clear()
-        for w in self.checklist.winfo_children():
-            w.destroy()
-        for i, name in enumerate(names):
-            var = tk.BooleanVar(value=True)
-            self._vars[name] = var
-            ctk.CTkCheckBox(
-                self.checklist, text=name, variable=var,
-                font=ctk.CTkFont(size=11),
-                height=22, checkbox_width=18, checkbox_height=18,
-                command=self._on_check_changed,
-            ).grid(row=i, column=0, sticky="w", padx=5, pady=1)
-        self._update_label()
-
-    def _toggle(self):
-        if self._open:
-            self.dropdown.grid_remove()
-        else:
-            self.dropdown.grid()
-        self._open = not self._open
-
-    def _select_all(self):
-        for v in self._vars.values():
-            v.set(True)
-        self._update_label()
-        self._fire()
-
-    def _deselect_all(self):
-        for v in self._vars.values():
-            v.set(False)
-        self._update_label()
-        self._fire()
-
-    def _on_check_changed(self):
-        self._update_label()
-        self._fire()
-
-    def _update_label(self):
-        total = len(self._vars)
-        selected = sum(1 for v in self._vars.values() if v.get())
-        if selected == total:
-            self.toggle_btn.configure(text=f"Filter {self._label}: All Selected ({total})")
-        elif selected == 0:
-            self.toggle_btn.configure(text=f"Filter {self._label}: None Selected")
-        else:
-            self.toggle_btn.configure(text=f"Filter {self._label}: {selected} of {total} selected")
-
-    def _fire(self):
-        if self._on_change:
-            self._on_change()
-
-    @property
-    def selected(self) -> set[str]:
-        return {n for n, v in self._vars.items() if v.get()}
-
-    @property
-    def all_selected(self) -> bool:
-        return all(v.get() for v in self._vars.values())
 
 
 # ── Suggestion panel ──
@@ -196,6 +82,8 @@ class SuggestionPanel(ctk.CTkFrame):
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
+        # Keep the filter bar from collapsing below its usable height (brief T3.5).
+        self.grid_rowconfigure(1, minsize=36)
 
         # Header
         self.header = ctk.CTkLabel(
@@ -204,17 +92,10 @@ class SuggestionPanel(ctk.CTkFrame):
         )
         self.header.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
 
-        # Filter row — crates and genres side by side
-        filter_row = ctk.CTkFrame(self, fg_color="transparent")
-        filter_row.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 3))
-        filter_row.grid_columnconfigure(0, weight=1)
-        filter_row.grid_columnconfigure(1, weight=1)
-
-        self.crate_filter = FilterDropdown(filter_row, label="Crates", on_change=self._filter_changed)
-        self.crate_filter.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-
-        self.genre_filter = FilterDropdown(filter_row, label="Genres", on_change=self._filter_changed)
-        self.genre_filter.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        # Filter bar — Crates | Genres | Transition | Added | Reset (brief T3.5).
+        # Overlays float over this SuggestionPanel (host), so the list doesn't move.
+        self.filter_bar = FilterBar(self, host=self, on_filter_change=self._filter_changed)
+        self.filter_bar.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 3))
 
         # Column headers
         col_hdr = ctk.CTkFrame(self, fg_color=("gray85", "gray20"), height=26)
@@ -252,26 +133,34 @@ class SuggestionPanel(ctk.CTkFrame):
     # ── Public API ──
 
     def set_crates(self, crate_names: list[str]):
-        self.crate_filter.set_items(crate_names)
+        self.filter_bar.crate_filter.set_items(crate_names)
 
     def set_genres(self, genre_names: list[str]):
-        self.genre_filter.set_items(genre_names)
+        self.filter_bar.genre_filter.set_items(genre_names)
 
     @property
     def selected_crates(self) -> set[str]:
-        return self.crate_filter.selected
+        return self.filter_bar.crate_filter.selected
 
     @property
     def all_crates_selected(self) -> bool:
-        return self.crate_filter.all_selected
+        return self.filter_bar.crate_filter.all_selected
 
     @property
     def selected_genres(self) -> set[str]:
-        return self.genre_filter.selected
+        return self.filter_bar.genre_filter.selected
 
     @property
     def all_genres_selected(self) -> bool:
-        return self.genre_filter.all_selected
+        return self.filter_bar.genre_filter.all_selected
+
+    @property
+    def selected_key_offset(self) -> int:
+        return self.filter_bar.key_offset.selected_key_offset
+
+    @property
+    def selected_date_range(self) -> tuple[float | None, float | None]:
+        return self.filter_bar.date_range.selected_date_range
 
     def _filter_changed(self):
         if self._on_filter_change:
@@ -286,7 +175,15 @@ class SuggestionPanel(ctk.CTkFrame):
             w.destroy()
 
         if not scored_tracks:
-            self._show_empty("No compatible tracks found")
+            # Date-specific empty copy when the date filter is the active reason
+            # for zero results (brief §Microcopy).
+            if self.selected_date_range != (None, None):
+                self._show_empty(
+                    "No tracks found in this date range. "
+                    "Try a wider window or reset the date filter."
+                )
+            else:
+                self._show_empty("No compatible tracks found")
             self.header.configure(text="Suggestions (0)")
             return
 

@@ -20,6 +20,7 @@ from source.services.camelot import (
     classify,
     compatibility_score,
     parse_camelot,
+    shift_key,
     wheel_distance,
 )
 from source.config import HARMONIC_TIER_SCORES
@@ -219,3 +220,44 @@ def test_compatibility_score_diagonal_is_symmetric():
 )
 def test_compatibility_score_non_diagonal_tiers_are_symmetric(key1, key2):
     assert compatibility_score(key1, key2) == compatibility_score(key2, key1)
+
+
+# ── shift_key ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "key, steps, expected",
+    [
+        ("8A", 1, "9A"),     # +1 advances the number
+        ("1A", -1, "12A"),   # -1 wraps backward 1 -> 12
+        ("12B", 1, "1B"),    # +1 wraps forward 12 -> 1, letter preserved
+        ("8A", 0, "8A"),     # no shift is an identity
+        ("8B", -1, "7B"),    # letter preserved on a B key
+        ("3A", 2, "5A"),     # +2 step
+    ],
+)
+def test_shift_key_shifts_number_and_preserves_letter(key, steps, expected):
+    assert shift_key(key, steps) == expected
+
+
+@pytest.mark.parametrize("key", ["", "99X", "13A", "8C", "8"])
+def test_shift_key_invalid_key_returns_none(key):
+    assert shift_key(key, 1) is None
+
+
+def test_shift_key_does_not_make_compatibility_score_asymmetric():
+    """R4 guard: ``shift_key`` lives in the engine layer; it must NOT make the
+    harmonic score directional.
+
+    Direction is applied as a pre-shift to the target key string. The symmetric
+    ``compatibility_score`` is unchanged: scoring a current key against a +1
+    shifted target equals scoring the shifted target against the current key.
+    Same key, both orderings -> same score. This guards against a future
+    "simplification" that pushes the offset sign into ``classify`` /
+    ``compatibility_score`` (ADR-010 Decision point 4; blueprint R4).
+    """
+    current = "8A"
+    target = shift_key(current, 1)  # "9A"
+    assert compatibility_score(current, target) == compatibility_score(target, current)
+    # And the +1 shifted target is itself a PERFECT match for a candidate on that key.
+    assert compatibility_score(target, "9A") == 1.0

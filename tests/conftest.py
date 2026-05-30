@@ -36,6 +36,7 @@ def make_track() -> MakeTrack:
         genre: str = "House",
         crates: list[str] | None = None,
         full_file_path: str | None = None,
+        date_added: float = 0.0,
     ) -> Track:
         counter["n"] += 1
         n = counter["n"]
@@ -48,6 +49,7 @@ def make_track() -> MakeTrack:
             camelot_key=camelot_key,
             genre=genre,
             energy=energy,
+            date_added=date_added,
             full_file_path=path,
             crates=list(crates) if crates is not None else [],
         )

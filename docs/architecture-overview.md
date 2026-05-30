@@ -1,7 +1,7 @@
 # Architecture Overview — Serato Sidecar
 
 > **Status:** Reviewed — architectural assessment complete
-> **Last updated:** 2026-04-06 (Architect review #1)
+> **Last updated:** 2026-05-30 (ADR-011 — suggestion filter enhancements)
 
 ## System Purpose
 
@@ -44,7 +44,7 @@ Pure data structures and collections. No UI knowledge, no service dependencies.
 
 | Component | Responsibility |
 |-----------|---------------|
-| `Track` | Immutable dataclass representing a single track with all metadata |
+| `Track` | Immutable dataclass representing a single track with all metadata. Includes `date_added` (Unix timestamp float) — the first-seen-in-cache time used by the date-range suggestion filter; seeded from file `mtime` on first sight and carried forward across syncs. See ADR-011. |
 | `TrackLibrary` | In-memory collection of tracks with search and crate membership |
 
 ### Services (`services/`)
@@ -81,14 +81,14 @@ Presentation layer. CustomTkinter widgets and panels.
 Serato .crate files
     │
     ▼ (crate_parser.py + crate_sync.py)
-track_cache.json in user data dir
+track_cache.json (schema v2) in user data dir
     │
     ▼ (cache.py + TrackLibrary)
 In-memory TrackLibrary
     │
     ├──▶ Search → Track selection → NowPlayingDashboard
     │
-    └──▶ suggestion_engine.get_suggestions()
+    └──▶ suggestion_engine.get_suggestions(key_offset, date_from, date_to, …)
               │
               ▼
          Scored suggestions → SuggestionPanel → User picks next track
@@ -96,6 +96,10 @@ In-memory TrackLibrary
                                                        ▼
                                                  SessionPanel (setlist)
 ```
+
+**Cache schema:** `track_cache.json` is at schema **version 2** (see ADR-007). Each track dict carries a `date_added` first-seen-in-cache timestamp; `crate_sync` reads the previous cache and injects its tracks into `crate_parser.parse_all_crates` so existing `date_added` values are carried forward unchanged while new tracks are mtime-seeded. The `CACHE_VERSION` bump forces a one-time self-healing re-sync on upgrade.
+
+**Suggestion filters:** `get_suggestions` accepts four filter inputs — `allowed_crates`, `allowed_genres`, `key_offset` (Camelot wheel re-anchor, default 0), and `date_from` / `date_to` (date-added window). All filtering is in-memory (ADR-002). The filter controls live in `source/ui/filter_bar.py` (`FilterBar`, `FilterDropdown`, `KeyOffsetControl`, `DateRangeControl`, `FloatingOverlay`) and are forwarded by `app._update_suggestions()`. See ADR-011.
 
 ## Current State & Known Issues
 
@@ -110,6 +114,8 @@ In-memory TrackLibrary
 8. **`os.path` everywhere** — Coding standards specify `pathlib.Path` but every file uses `os.path` for all path operations.
 9. **No tests** — ~~Zero automated test coverage.~~ **Partially resolved** — a `tests/` directory now exists with unit coverage for `camelot.py` and `suggestion_engine.py` (services Phase 1 priority, both at ~100% line coverage). See ADR-010 and `docs/testing-strategy.md`. The rest of the codebase remains untested.
 10. **Mutable default in dataclass** — `Track.crates: list = field(default_factory=list)` is correctly handled with `field()`, but the list is mutated in-place by `library.py:41`, coupling library loading to track state.
+11. **No `SuggestionFilters` value object** — `get_suggestions` now carries four filter inputs (`allowed_crates`, `allowed_genres`, `key_offset`, `date_from`/`date_to`) as separate keyword args, and the filter state is scattered across the `filter_bar.py` widgets rather than centralised. As filter count grows, a frozen `SuggestionFilters` dataclass that the panel assembles and forwards (collapsing the keyword list into one typed argument and giving the UI a single "current filter state" to render/reset) is the documented next step. Deferred from ADR-011 in favour of lower-risk additive args. See ADR-011 consequences.
+12. **Stale doc reference to `comments_parser.py`** — `CLAUDE.md` lists `services/comments_parser.py` in the project structure, but that module no longer exists in the tree (functionality folded elsewhere). Out of scope to fix here; noted for a future `CLAUDE.md` cleanup.
 
 ### What's Working Well
 1. **Clean layer separation** — Models, services, and UI are in distinct packages with clear responsibilities

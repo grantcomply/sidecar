@@ -14,6 +14,7 @@ __all__ = [
     "HarmonicTier",
     "parse_camelot",
     "wheel_distance",
+    "shift_key",
     "classify",
     "compatibility_score",
 ]
@@ -47,6 +48,27 @@ def wheel_distance(n1: int, n2: int) -> int:
     """
     diff = abs(n1 - n2)
     return min(diff, 12 - diff)
+
+
+def shift_key(key: str, steps: int) -> str | None:
+    """Return the Camelot key ``steps`` positions around the wheel (same letter).
+
+    +1 from ``8A`` -> ``9A``; -1 from ``1A`` -> ``12A`` (the number wraps mod 12).
+    The letter is always preserved — a shift moves along the same A/B band. Returns
+    ``None`` for an invalid or empty key.
+
+    Direction lives HERE, in the engine layer, not in the harmonic score. This is
+    the ADR-010 boundary: ``classify`` and ``compatibility_score`` stay symmetric;
+    a directional offset is applied as a pre-shift to the target key string before
+    the symmetric score is called. Do NOT push the ``steps`` sign into those
+    functions (see ADR-010 Decision point 4 and blueprint R4 — the symmetry trap).
+    """
+    parsed = parse_camelot(key)
+    if parsed is None:
+        return None
+    num, letter = parsed
+    new_num = ((num - 1 + steps) % 12) + 1
+    return f"{new_num}{letter}"
 
 
 def classify(key1: str, key2: str) -> HarmonicTier:

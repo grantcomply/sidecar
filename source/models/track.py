@@ -18,6 +18,7 @@ class Track:
     comments: str = ""
     energy: int = 0
     play_count: int = 0
+    date_added: float = 0.0
     full_file_path: str = ""
     crates: list = field(default_factory=list)
     search_text: str = ""
@@ -104,6 +105,13 @@ class Track:
         except (ValueError, TypeError):
             pass
 
+        # First-seen-in-cache timestamp (Unix float). Mirrors the bpm coercion.
+        date_added = 0.0
+        try:
+            date_added = float(data.get("date_added", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            pass
+
         camelot_key = (data.get("camelot_key", "") or "").strip()
 
         # Energy from tag value
@@ -142,6 +150,7 @@ class Track:
             comments=data.get("comments", "") or "",
             energy=energy,
             play_count=play_count,
+            date_added=date_added,
             full_file_path=full_path,
             crates=crates,
             search_text=search_text,

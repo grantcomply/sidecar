@@ -107,6 +107,8 @@ BPM_MAX_DIFF = 20
 ENERGY_SEVERE_PENALTY_THRESHOLD = 3
 MAX_SUGGESTIONS = 60
 
+KEY_OFFSET_RANGE = (-2, 2)  # inclusive min/max for the transition offset filter
+
 # Standard Camelot wheel colors — maps each key to a distinct hue
 CAMELOT_COLORS = {
     "1A": "#E8637A", "1B": "#FF7A8F",

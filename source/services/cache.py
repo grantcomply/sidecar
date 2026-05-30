@@ -13,7 +13,7 @@ from source.config import PROJECT_ROOT, user_data_dir
 
 logger = logging.getLogger(__name__)
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 _CACHE_FILENAME = "track_cache.json"
 _legacy_cache_migrated = False
@@ -87,7 +87,7 @@ def save_cache(
     Args:
         tracks: Dict keyed by file path, values are track metadata dicts.
         crate_mtimes: Dict mapping crate filenames to modification times.
-        path: Override cache file path (defaults to project root).
+        path: Override cache file path (defaults to the user data directory).
     """
     if path is None:
         path = get_cache_path()

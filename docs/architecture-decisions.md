@@ -126,7 +126,7 @@
   **Cache file structure:**
   ```json
   {
-    "version": 1,
+    "version": 2,
     "synced_at": "2026-04-06T14:30:00",
     "crate_mtimes": {
       "My Crate.crate": 1712412600.0
@@ -143,11 +143,18 @@
         "energy_level": 5,
         "play_count": 3,
         "comments": "8A - Energy 5 - Groover",
+        "date_added": 1712412600.0,
         "crates": ["My Crate", "House Bangers"]
       }
     }
   }
   ```
+
+  **Schema version history:**
+  - **v1** — original structure (no `date_added`).
+  - **v2** (ADR-011, 2026-05-30) — adds `date_added` (Unix timestamp float): the first-seen-in-cache time for the track, seeded from file `mtime` on first sight and carried forward unchanged across subsequent syncs. `CACHE_VERSION` is now `2` (`source/services/cache.py:16`). Because a version mismatch makes `load_cache` return `None` (see below), the bump forces a **one-time, self-healing re-sync** on upgrade — old v1 caches are ignored, every track is freshly mtime-seeded, and no bespoke migration code is needed. See ADR-011 Decision B.
+
+  **Version-mismatch behaviour:** `load_cache` compares the file's `version` against `CACHE_VERSION` and returns `None` on any mismatch (`source/services/cache.py:70-76`), which the app treats as "no cache" and triggers a re-sync. This is the migration mechanism — schema changes are absorbed by bumping the version rather than transforming old files in place.
 
   **What changes:**
   1. `export_crates.py` → Refactor into `crate_parser.py`. Keep `parse_crate_file()` and `get_track_metadata()`. Remove all CSV writing. Add a function that returns parsed track dicts (not CSV rows).
@@ -289,3 +296,61 @@ Decision point 4 has been corrected above to formally adopt the symmetric diagon
 #### Residual risk
 
 - **R2 (repurposed) — a future contributor wrongly assumes the diagonal must be directional.** "Diagonal" can intuitively read as a one-way move, and the original draft of this ADR made exactly that mistake. A contributor might "fix" the symmetric diagonal into an asymmetric one, reintroducing an unsatisfiable, harmonically-wrong rule. Mitigation: the symmetric behaviour is stated in Decision point 4 above, in the `compatibility_score` / `classify` docstrings in `source/services/camelot.py`, and is locked in by a dedicated symmetry test in `tests/services/test_camelot.py` that asserts `compatibility_score("9A","8B") == compatibility_score("8B","9A")`. Any directional "fix" breaks that test.
+
+---
+
+### ADR-011: Suggestion Filter Enhancements (key-offset re-anchor; first-seen date-added)
+
+- **Status:** Accepted
+- **Date:** 2026-05-30
+- **Relates to:** Extends ADR-002 (filtering stays in-memory) and ADR-007 (cache schema bumped to v2); respects ADR-010 (Camelot symmetry preserved).
+
+#### Context
+
+Two user-driven enhancements to the suggestion system, plus a UX review of the filter bar:
+
+1. **"Stuck in the same key."** PERFECT same-key matches (score `1.0`, the top harmonic tier from ADR-010) always dominate the suggestion list, so like-for-like mixing is the path of least resistance and DJs never climb the wheel. Users want a "transition ±N" control that steers them off same-key matches and progressively up (or down) the Camelot wheel.
+2. **"Date added" filtering.** DJs want to review tracks they discovered recently (e.g. "the last two months"). No per-track "date added to library" timestamp existed anywhere in the pipeline — `Track.date` is the ID3 `TDRC` release date (wrong meaning), and the cache only stored a single global `synced_at` plus per-crate `crate_mtimes`.
+3. **Filter UX review** (owned by the UI Designer; see `plans/suggestion-filter-enhancements-2026-05/ui-design-brief.md`). Architecturally this only required keeping the existing `None`-means-no-filter engine contract intact while the filter controls were redesigned into a floating-overlay pill bar (`source/ui/filter_bar.py`).
+
+The architectural risk shared by (1) and (2) is that each is a *cross-cutting* change: (1) introduces *direction*, which must not leak into the symmetric Camelot core (the ADR-010 R2 trap); (2) requires a cache **schema** change, which must route through ADR-007's versioning.
+
+#### Decision A — Key offset as a target-key re-anchor
+
+`get_suggestions(..., key_offset: int = 0)`. A non-zero offset does **not** hard-filter or re-weight; it **re-anchors the harmonic target**. The engine computes `target = shift_key(current.camelot_key, key_offset)` (a new leaf helper in `source/services/camelot.py`) and scores every candidate against that shifted target instead of the current key, while excluding PERFECT (identical-key) candidates measured against the *current* key. At `key_offset == 0` (the default) the target is the current key and nothing is excluded — byte-for-byte today's behaviour.
+
+Rejected alternatives: a **hard filter** (`current ± N` only) collapses the pool to one or two keys and discards the ADR-010 tiered model; a **same-key penalty / re-weight** demotes like-for-like but still anchors everything around the current key and fails to move the DJ *toward* the next key. The re-anchor preserves the full tiered model and the energy/BPM blend — the suggestion list stays rich and ranked, only its harmonic centre of gravity moves.
+
+**The load-bearing boundary (ADR-010 R4):** direction is applied as a *pre-shift to the target key string*, before the symmetric `compatibility_score` / `classify` are called. `shift_key` only advances the *number* around the wheel (wrapping 12↔1) and keeps the letter; it returns `None` for invalid/empty keys, in which case the engine falls back to offset-0 behaviour (blueprint R5). `compatibility_score` and `classify` are **never** made directional — the symmetry tests in `tests/services/test_camelot.py` stay green.
+
+`KEY_OFFSET_RANGE` lives in `source/config.py` (default `(-2, 2)`). The engine **defensively clamps** `key_offset` to this range (`suggestion_engine.py:62`) so a future caller passing a raw out-of-range value cannot silently re-anchor to an unintended key. *(This clamp was added during implementation; it was not in the original blueprint draft but is a strict safety improvement consistent with the decision.)*
+
+#### Decision B — Date-added as a first-seen-in-cache timestamp, mtime-seeded
+
+Add `Track.date_added: float = 0.0` (Unix timestamp, matching the `synced_at` / `crate_mtimes` conventions). Its value is the **first-seen-in-cache** time, established once and then frozen:
+
+- **New track** (not in the previous cache): seed `date_added` from the file's **`mtime`** (`Path(path).stat().st_mtime`), falling back to sync time on `OSError`. The seed is computed in `crate_parser.get_track_metadata`.
+- **Existing track** (present in the previous cache with a non-zero `date_added`): **carry the value forward unchanged**. Carry-forward is done by `parse_all_crates`, which receives the previous cache's tracks as an injected parameter — the parser stays pure and does not import the cache (blueprint R2). `crate_sync` reads the previous cache and supplies it.
+
+First-seen-in-cache is the truest available proxy for "tracks I found recently": it is the date the track entered *this app's* view of the library. Seeding from `mtime` (rather than sync time) gives a more accurate add-date for tracks added between syncs. Once set the value never moves, so re-tagging a file later does not disturb it.
+
+Rejected sources: ID3 `TDRC`/`Track.date` (release date, not add date); Serato `database V2` add-date (out of scope — undocumented binary format, fragile, large effort); `st_ctime` (inode-change-time on Linux, creation on Windows — inconsistent); `st_birthtime` (not reliably available on Linux). `mtime` is the only universally-present, cross-platform timestamp.
+
+**Engine filter:** `get_suggestions(..., date_from: float | None = None, date_to: float | None = None)`. Both `None` = no date filter. A track with `date_added == 0.0` (unknown) is **excluded** when `date_from` is set — it cannot be proven to be in range (`suggestion_engine.py:88-93`).
+
+**Cache schema:** `date_added` flows into each track dict written by `save_cache` automatically. `CACHE_VERSION` is bumped **1 → 2** (`source/services/cache.py:16`). Per ADR-007 a version mismatch makes `load_cache` return `None`, forcing one self-healing re-sync on upgrade (after which old caches carry nothing forward and every track is freshly mtime-seeded — correct and intended). See ADR-007's updated structure block.
+
+#### Consequences
+
+- Pro: A non-zero offset surfaces a rich, ranked suggestion pool re-centred up/down the wheel without gutting the ADR-010 tiered model; energy/BPM blending is untouched.
+- Pro: Direction is confined to the engine; the Camelot core stays symmetric and its tests stay green. The defensive clamp removes a footgun for future callers.
+- Pro: A cross-platform "date added" proxy with no new dependencies and no new binary parsing; the value is stable once set.
+- Pro: The schema change rides ADR-007's versioning cleanly — one forced, self-healing re-sync, no bespoke migration code.
+- Con: **First-sync add-dates are mtime-approximate** and cluster oddly for pre-existing libraries; accuracy improves over time as new tracks get real first-seen dates. This must be stated plainly to users (the UI Designer pinned honest caveat copy in the date panel: "Dates are approximate for tracks added before your first sync.").
+- Con: One forced re-sync for every existing user on upgrade to cache v2 (ADR-007 R3 — accepted; sync is fast and user-initiated).
+- Con: The engine signature now carries four filter keyword args (`allowed_crates`, `allowed_genres`, `key_offset`, `date_from`/`date_to`). A future `SuggestionFilters` value object (a frozen dataclass the panel assembles and forwards) is the **documented next step** as filter count grows — deferred for this feature in favour of lower-risk additive args. Tracked as architectural debt in `docs/architecture-overview.md`.
+
+#### Residual risk
+
+- **R4 (from ADR-010) — direction leaking into the symmetric core.** A future contributor might "simplify" the offset by making `classify` / `compatibility_score` directional. Mitigation: the boundary is stated in Decision A and the `camelot.py` docstrings; `shift_key` keeps direction in the engine; the symmetry tests fail on any directional change.
+- **R1 — first-sync date accuracy.** Accepted with mitigation (improves over time; honest UI caveat). Open question deferred to the user: whether a future Serato `database V2` parser for true add-dates is worth building. Recommendation: ship first-seen now, revisit only on request.

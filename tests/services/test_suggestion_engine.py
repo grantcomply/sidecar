@@ -234,3 +234,184 @@ def test_get_suggestions_empty_library_returns_empty_list(make_track, empty_libr
     current = make_track(camelot_key="8A")
 
     assert get_suggestions(current, empty_library) == []
+
+
+# ── Key transition offset (re-anchor + same-key suppression) ────────────────
+
+
+def test_get_suggestions_offset_excludes_same_key(make_track, make_library):
+    """With key_offset=1, no PERFECT same-key (current) track is offered."""
+    current = make_track(camelot_key="8A")
+    same_key = make_track(camelot_key="8A")  # PERFECT vs current -> suppressed
+    one_up = make_track(camelot_key="9A")    # one step up
+    library = make_library([current, same_key, one_up])
+
+    results = get_suggestions(current, library, key_offset=1)
+
+    assert same_key.full_file_path not in _paths(results)
+    assert one_up.full_file_path in _paths(results)
+
+
+def test_get_suggestions_offset_scores_shifted_target_as_perfect(make_track, make_library):
+    """A track exactly at current+1 scores PERFECT against the shifted target."""
+    current = make_track(camelot_key="8A")
+    one_up = make_track(camelot_key="9A")  # == shift_key("8A", 1)
+    library = make_library([current, one_up])
+
+    results = get_suggestions(current, library, key_offset=1)
+
+    scored = next(s for s in results if s.track is one_up)
+    assert scored.key_score == 1.0
+    assert scored.harmonic_tier is HarmonicTier.PERFECT
+
+
+def test_get_suggestions_offset_zero_matches_baseline(make_track, make_library):
+    """key_offset=0 is byte-for-byte identical to the no-offset baseline.
+
+    Mirrors test_get_suggestions_populates_harmonic_tier — same library, same
+    expected scores and tiers, just with the default argument made explicit.
+    """
+    current = make_track(camelot_key="8A")
+    candidates = [
+        make_track(camelot_key="8A"),   # PERFECT — NOT suppressed at offset 0
+        make_track(camelot_key="9A"),   # ADJACENT
+        make_track(camelot_key="8B"),   # RELATIVE
+        make_track(camelot_key="10A"),  # ENERGY
+        make_track(camelot_key="3A"),   # SEMITONE
+        make_track(camelot_key="12A"),  # RELATED
+    ]
+    library = make_library([current, *candidates])
+
+    baseline = get_suggestions(current, library)
+    explicit = get_suggestions(current, library, key_offset=0)
+
+    assert _paths(explicit) == _paths(baseline)
+    baseline_by_path = {s.track.full_file_path: s for s in baseline}
+    for scored in explicit:
+        twin = baseline_by_path[scored.track.full_file_path]
+        assert scored.key_score == twin.key_score
+        assert scored.total_score == twin.total_score
+        assert scored.harmonic_tier is twin.harmonic_tier
+    # Same-key (PERFECT) candidate is present at offset 0 — not suppressed.
+    assert any(s.key_score == 1.0 for s in explicit)
+
+
+def test_get_suggestions_offset_with_current_no_key_falls_back(make_track, make_library):
+    """Current track with empty key + offset falls back gracefully (offset 0).
+
+    ``shift_key`` returns None for an empty key, so the offset path is skipped.
+    With no current key the harmonic gate excludes every candidate (same as the
+    no-offset behaviour) — the call must not crash and returns an empty list.
+    """
+    current = make_track(camelot_key="")
+    other = make_track(camelot_key="8A")
+    library = make_library([current, other])
+
+    results = get_suggestions(current, library, key_offset=1)
+
+    assert results == []
+
+
+def test_get_suggestions_offset_with_invalid_current_key_falls_back(make_track, make_library):
+    """A non-empty but INVALID current key + offset falls back to offset 0.
+
+    Unlike the empty-key case, ``camelot_key="13A"`` is truthy so it passes the
+    ``if key_offset and current.camelot_key`` guard and reaches ``shift_key``,
+    which returns ``None`` for the out-of-range number. This exercises the
+    ``if shifted:`` fallback the empty-key test short-circuits past: the target
+    stays the (invalid) current key, no same-key suppression occurs, and the call
+    must not crash. The harmonic gate then excludes the candidate (invalid current
+    key scores 0.0 against anything), reproducing offset-0 behaviour exactly.
+    """
+    current = make_track(camelot_key="13A")  # parses the regex, fails 1-12 range
+    same_key = make_track(camelot_key="13A")
+    other = make_track(camelot_key="8A")
+    library = make_library([current, same_key, other])
+
+    offset_results = get_suggestions(current, library, key_offset=1)
+    baseline_results = get_suggestions(current, library, key_offset=0)
+
+    # No crash, and behaves exactly as offset 0 (no same-key suppression kicked in).
+    assert _paths(offset_results) == _paths(baseline_results)
+    assert offset_results == []
+
+
+# ── Date-added range filter ─────────────────────────────────────────────────
+
+# Three fixed epoch timestamps (seconds). OLD < MID < NEW.
+_OLD = 1_600_000_000.0   # 2020-09-13
+_MID = 1_700_000_000.0   # 2023-11-14
+_NEW = 1_740_000_000.0   # 2025-02-19
+
+
+def test_get_suggestions_date_from_excludes_older(make_track, make_library):
+    """date_from drops candidates added before the threshold."""
+    current = make_track(camelot_key="8A")
+    old = make_track(camelot_key="9A", date_added=_OLD)
+    new = make_track(camelot_key="9A", date_added=_NEW)
+    library = make_library([current, old, new])
+
+    results = get_suggestions(current, library, date_from=_MID)
+
+    assert old.full_file_path not in _paths(results)
+    assert new.full_file_path in _paths(results)
+
+
+def test_get_suggestions_date_to_excludes_newer(make_track, make_library):
+    """date_to drops candidates added after the threshold."""
+    current = make_track(camelot_key="8A")
+    old = make_track(camelot_key="9A", date_added=_OLD)
+    new = make_track(camelot_key="9A", date_added=_NEW)
+    library = make_library([current, old, new])
+
+    results = get_suggestions(current, library, date_to=_MID)
+
+    assert old.full_file_path in _paths(results)
+    assert new.full_file_path not in _paths(results)
+
+
+def test_get_suggestions_date_window_bounds_both_ends(make_track, make_library):
+    """date_from + date_to keep only candidates inside the window (inclusive)."""
+    current = make_track(camelot_key="8A")
+    old = make_track(camelot_key="9A", date_added=_OLD)
+    mid = make_track(camelot_key="9A", date_added=_MID)
+    new = make_track(camelot_key="9A", date_added=_NEW)
+    library = make_library([current, old, mid, new])
+
+    results = get_suggestions(current, library, date_from=_OLD, date_to=_MID)
+
+    assert _paths(results) == {old.full_file_path, mid.full_file_path}
+
+
+def test_get_suggestions_date_from_excludes_unknown_date(make_track, make_library):
+    """A track with date_added == 0.0 is excluded when date_from is set.
+
+    The intended "can't prove it's in range" behaviour (blueprint §4): an unknown
+    add-date (legacy / failed stat) drops out of any from-bounded window.
+    """
+    current = make_track(camelot_key="8A")
+    unknown = make_track(camelot_key="9A", date_added=0.0)
+    known = make_track(camelot_key="9A", date_added=_NEW)
+    library = make_library([current, unknown, known])
+
+    results = get_suggestions(current, library, date_from=_MID)
+
+    assert unknown.full_file_path not in _paths(results)
+    assert known.full_file_path in _paths(results)
+
+
+def test_get_suggestions_date_none_reproduces_baseline(make_track, make_library):
+    """date_from=None and date_to=None (the default) apply no date filter.
+
+    Even a 0.0-dated track survives when no date bound is set — baseline behaviour.
+    """
+    current = make_track(camelot_key="8A")
+    old = make_track(camelot_key="9A", date_added=_OLD)
+    unknown = make_track(camelot_key="9A", date_added=0.0)
+    library = make_library([current, old, unknown])
+
+    baseline = get_suggestions(current, library)
+    explicit_none = get_suggestions(current, library, date_from=None, date_to=None)
+
+    assert _paths(baseline) == {old.full_file_path, unknown.full_file_path}
+    assert _paths(explicit_none) == _paths(baseline)
