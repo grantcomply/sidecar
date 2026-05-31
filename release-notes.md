@@ -1,23 +1,23 @@
-New filters: step through keys, find recent tracks, and a cleaner filter bar.
+Smoother filters: stage changes then Apply, one-click Clear, and file-date-based date-added.
 
-## Transition filter — work your way through the keys
+## Filters apply when you're ready
 
-A new **Transition** stepper lets you shift harmonic matching up or down the
-Camelot wheel. Set it to **+1** and Sidecar stops offering same-key tracks and
-surfaces the ones a step up instead — so you can progressively climb through the
-keys instead of getting stuck on like-for-like matches. Works ±2 steps in either
-direction; at "same key" it behaves exactly as before.
+Changing a filter no longer reloads suggestions on every click. Stage as
+many changes as you like — across crates, genres, key transition and date —
+and an **Apply / Cancel** bar appears at the bottom. Nothing re-scores until
+you hit **Apply**, so the app stays responsive while you set things up. Pills
+you've edited show a lighter blue until applied, and **Cancel** snaps
+everything back to what was last applied.
 
-## Date-added filter — look back at recent finds
+## One-click Clear
 
-Filter suggestions by when a track was added. Pick a preset (last month, last 3
-months, last 6 months, this year) or type a **From / To** date range — handy for
-building a set from tracks you discovered recently. Dates are approximate for
-tracks added before your first sync and sharpen over time.
+Each crate and genre filter now has a **"Clear"** alongside "Select all", so
+you can deselect everything and pick a fresh few. When nothing's selected, the
+panel tells you so clearly instead of just showing an empty list.
 
-## Cleaner filter bar
+## Date-added uses the file's creation date
 
-The filter controls were reworked. Filters are now compact pills that open as
-floating panels (no more pushing the suggestion list down the screen), light up
-blue when active so you can see at a glance what's on, and a single **Reset
-filters** link clears everything at once.
+The **Added** filter now reflects when each track's file was created on your
+computer, rather than an approximate first-seen date — so looking back at
+recent finds is more accurate. Your library will do a one-time re-sync on
+first launch to pick up the new dates.
