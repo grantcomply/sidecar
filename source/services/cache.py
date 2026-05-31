@@ -13,7 +13,7 @@ from source.config import PROJECT_ROOT, user_data_dir
 
 logger = logging.getLogger(__name__)
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 
 _CACHE_FILENAME = "track_cache.json"
 _legacy_cache_migrated = False

@@ -152,7 +152,8 @@
 
   **Schema version history:**
   - **v1** — original structure (no `date_added`).
-  - **v2** (ADR-011, 2026-05-30) — adds `date_added` (Unix timestamp float): the first-seen-in-cache time for the track, seeded from file `mtime` on first sight and carried forward unchanged across subsequent syncs. `CACHE_VERSION` is now `2` (`source/services/cache.py:16`). Because a version mismatch makes `load_cache` return `None` (see below), the bump forces a **one-time, self-healing re-sync** on upgrade — old v1 caches are ignored, every track is freshly mtime-seeded, and no bespoke migration code is needed. See ADR-011 Decision B.
+  - **v2** (ADR-011, 2026-05-30) — adds `date_added` (Unix timestamp float): the first-seen-in-cache time for the track, seeded from file `mtime` on first sight and carried forward unchanged across subsequent syncs. `CACHE_VERSION` is now `2` (`source/services/cache.py:16`). Because a version mismatch makes `load_cache` return `None` (see below), the bump forces a **one-time, self-healing re-sync** on upgrade — old v1 caches are ignored, every track is freshly mtime-seeded, and no bespoke migration code is needed. See ADR-011 Decision B. *(Superseded by v3 — `date_added` is no longer mtime-seeded or carried forward.)*
+  - **v3** (ADR-013, 2026-05-31) — `date_added` is re-sourced from the file's **creation time** (via `source/services/file_times.file_creation_time`), read **fresh on every sync** (no carry-forward). `CACHE_VERSION` is now `3`; the bump forces one self-healing re-sync that drops the stale v2 mtime-seeded values and re-seeds every track from creation time. See ADR-013.
 
   **Version-mismatch behaviour:** `load_cache` compares the file's `version` against `CACHE_VERSION` and returns `None` on any mismatch (`source/services/cache.py:70-76`), which the app treats as "no cache" and triggers a re-sync. This is the migration mechanism — schema changes are absorbed by bumping the version rather than transforming old files in place.
 
@@ -301,7 +302,7 @@ Decision point 4 has been corrected above to formally adopt the symmetric diagon
 
 ### ADR-011: Suggestion Filter Enhancements (key-offset re-anchor; first-seen date-added)
 
-- **Status:** Accepted
+- **Status:** Accepted — Decision B (date_added source) **superseded in part by ADR-013** (2026-05-31).
 - **Date:** 2026-05-30
 - **Relates to:** Extends ADR-002 (filtering stays in-memory) and ADR-007 (cache schema bumped to v2); respects ADR-010 (Camelot symmetry preserved).
 
@@ -327,6 +328,8 @@ Rejected alternatives: a **hard filter** (`current ± N` only) collapses the poo
 
 #### Decision B — Date-added as a first-seen-in-cache timestamp, mtime-seeded
 
+> **Superseded in part by ADR-013 (2026-05-31):** the `date_added` *source* described below (mtime-seeded first-seen-in-cache, carried forward) has been reversed — `date_added` is now the file's **creation time**, read fresh each sync. The field name, the engine filter, and the `0.0 = unknown` contract are unchanged. See ADR-013.
+
 Add `Track.date_added: float = 0.0` (Unix timestamp, matching the `synced_at` / `crate_mtimes` conventions). Its value is the **first-seen-in-cache** time, established once and then frozen:
 
 - **New track** (not in the previous cache): seed `date_added` from the file's **`mtime`** (`Path(path).stat().st_mtime`), falling back to sync time on `OSError`. The seed is computed in `crate_parser.get_track_metadata`.
@@ -346,7 +349,7 @@ Rejected sources: ID3 `TDRC`/`Track.date` (release date, not add date); Serato `
 - Pro: Direction is confined to the engine; the Camelot core stays symmetric and its tests stay green. The defensive clamp removes a footgun for future callers.
 - Pro: A cross-platform "date added" proxy with no new dependencies and no new binary parsing; the value is stable once set.
 - Pro: The schema change rides ADR-007's versioning cleanly — one forced, self-healing re-sync, no bespoke migration code.
-- Con: **First-sync add-dates are mtime-approximate** and cluster oddly for pre-existing libraries; accuracy improves over time as new tracks get real first-seen dates. This must be stated plainly to users (the UI Designer pinned honest caveat copy in the date panel: "Dates are approximate for tracks added before your first sync.").
+- Con: **First-sync add-dates are mtime-approximate** and cluster oddly for pre-existing libraries; accuracy improves over time as new tracks get real first-seen dates. This must be stated plainly to users (the UI Designer pinned honest caveat copy in the date panel: "Dates are approximate for tracks added before your first sync."). *(Superseded by ADR-013: with creation-time sourcing this approximation no longer applies and the caveat copy was replaced — see ADR-013 R5.)*
 - Con: One forced re-sync for every existing user on upgrade to cache v2 (ADR-007 R3 — accepted; sync is fast and user-initiated).
 - Con: The engine signature now carries four filter keyword args (`allowed_crates`, `allowed_genres`, `key_offset`, `date_from`/`date_to`). A future `SuggestionFilters` value object (a frozen dataclass the panel assembles and forwards) is the **documented next step** as filter count grows — deferred for this feature in favour of lower-risk additive args. Tracked as architectural debt in `docs/architecture-overview.md`.
 
@@ -378,3 +381,43 @@ Rejected sources: ID3 `TDRC`/`Track.date` (release date, not add date); Serato `
   - Pro: No third copy of state — widgets stay the staged source, the panel owns one applied snapshot; track/session changes correctly reuse the last-applied filters.
   - Con: Loss of live preview — the explicit, requested trade-off.
   - Con: One more concept (staged vs applied) and two revert-style affordances (Reset-to-defaults vs Cancel-to-applied), mitigated by distinct labels, a staged-tint pill cue (`#3a88c8` vs applied `#1f6aa5`), and the "Filters changed" Apply/Cancel bar. The date overlay's internal "Apply" button was renamed "Set dates" to avoid a naming collision with the global Apply.
+
+---
+
+### ADR-013: `date_added` sourced from file creation time (supersedes ADR-011 Decision B)
+
+- **Status:** Accepted
+- **Date:** 2026-05-31
+- **Supersedes:** ADR-011 Decision B (the `date_added` *source*: mtime-seeded first-seen-in-cache, carried forward).
+- **Relates to:** ADR-007 (cache schema bumped to v3); ADR-008 / `docs/cross-platform-guide.md` (Windows + macOS are the only shipping targets); ADR-010 (leaf-module pattern, mirrored by `file_times.py`).
+
+#### Context
+
+ADR-011 Decision B added `Track.date_added: float` and seeded it from the file's **modification time** (`Path(path).stat().st_mtime`), establishing a frozen *first-seen-in-cache* value carried forward on every later sync. ADR-011 **explicitly rejected** creation time at the time, because `st_ctime` means inode-change-time on Linux and `st_birthtime` is not reliably available there — `mtime` was "the only universally-present, cross-platform timestamp."
+
+The user now wants the opposite: *"the date added [should be] based on the created date time of the file on my computer so the filter uses that."* This ADR consciously reverses ADR-011's date_added source. The reversal is acceptable now for a reason that did not weigh in ADR-011's framing: **Serato Sidecar ships installers only for Windows and macOS** (ADR-008, `cross-platform-guide.md`), and on **both** of those platforms a true file creation time is obtainable. Linux — the only platform where creation time is unreliable — is a dev-machine-only "Future" tier, not a shipping target.
+
+The load-bearing technical fact: the bundled interpreter is **Python 3.11.9**, which does **not** expose `st_birthtime` on Windows (that arrives in Python 3.12). On Windows 3.11, `st_ctime` *is* the creation time, so the helper must use it there.
+
+#### Decision
+
+- **D1 — Reverse the source: `date_added` is the file's creation time.** It is seeded from a cross-platform creation-time read, replacing the `st_mtime` read in `crate_parser.get_track_metadata`. The residual risk (Linux's unreliable creation time) lands only on a non-shipping platform.
+- **D2 — A small, pure, testable creation-time helper.** New leaf module `source/services/file_times.py` exposes `file_creation_time(path) -> float | None` with an explicit fallback chain (first hit wins): (1) `os.stat`; `OSError` → `None`; (2) `st_birthtime` if present and `> 0` (macOS all versions; Windows 3.12+); (3) `st_ctime` if `sys.platform == "win32"` (Windows 3.11: ctime is creation time); (4) `st_mtime` (Linux/other, dev-only). The helper has no project deps (mirrors `harmonic_tier.py`, ADR-010) and is unit-tested via mocked `os.stat` / `sys.platform`. It returns `None` on stat failure rather than substituting a fallback timestamp — the **caller** maps `None` → `0.0` ("unknown"), preserving the engine's `0.0`-excluded date-filter contract (`suggestion_engine.py:88-93`). The `> 0` guard handles filesystems reporting `st_birthtime == 0` ("unknown birth").
+- **D3 — Drop the carry-forward; read creation time fresh each sync.** ADR-011 froze `date_added` because *first-seen* is observation state (meaningful only relative to when the cache first saw the track). Creation time is **not** observation state — it is an intrinsic, re-readable property of the file. Freezing it adds complexity and causes drift, so the carry-forward is removed: the `previous_tracks` plumbing is dropped from `parse_all_crates` and `crate_sync._run()`, and `date_added` is read fresh on every sync.
+- **D4 — Cache migration: bump `CACHE_VERSION` 2 → 3.** Existing v2 caches hold mtime-based values that are now semantically wrong and (with carry-forward gone) would never be re-seeded for unchanged tracks. Per ADR-007's versioning mechanism, the bump makes `load_cache` return `None` on the version mismatch, triggering one self-healing re-sync that re-seeds every track from creation time. No bespoke migration code.
+- **D5 — Field name unchanged; semantic note added.** `date_added` is referenced across the model, cache, engine and UI; renaming it would ripple for no functional gain. The name stays; its **meaning** shifts from "first time this app saw the track (mtime-seeded, frozen)" to "the file's creation time on this machine (read fresh)." The shift is recorded in the `Track.date_added` comment, the `get_track_metadata` seed comment, this ADR, the ADR-011 cross-reference, and the architecture overview.
+
+#### Consequences
+
+- Pro: `date_added` now reflects exactly what the user asked for — the file's creation date on their machine — read directly from the filesystem.
+- Pro: The platform-branching logic is isolated in one pure, unit-tested leaf module; call sites stay trivial and the Windows-3.11 `st_ctime` branch is locked by a test so the future 3.12 move can't silently regress it.
+- Pro: Dropping the carry-forward removes state and the cache-load it required; the schema change rides ADR-007's versioning cleanly (one forced, self-healing re-sync, no bespoke migration).
+- Con (**R2, accepted**): Copying or re-downloading a track resets its filesystem creation time, so `date_added` jumps to the copy date on the next sync — a re-acquired track surfaces as "recently added." This matches the user's mental model ("the file on my computer"); the carry-forward alternative would ignore machine state, contradicting the request.
+- Con (**R3, accepted**): One forced re-sync per existing user on the v2 → v3 bump (ADR-007 R3 pattern; sync is fast and user-initiated).
+- Con (**R4, accepted**): Linux dev machines get `mtime`, not creation time. Linux is not a shipping target; the helper degrades gracefully without claiming false accuracy. Documented in `cross-platform-guide.md`.
+
+#### Residual risk
+
+- **R1 — Windows `st_ctime` semantic on 3.11.** Correctly handled: the helper only falls through to `st_ctime` after the `st_birthtime` check (absent on Windows 3.11). When the bundled interpreter moves to 3.12+, `st_birthtime` transparently takes precedence — no code change needed. Locked by `tests/services/test_file_times.py::test_windows_python_311_returns_ctime`.
+- **R5 — Stale UI caveat copy (resolved here).** ADR-011's date-panel caveat ("Dates are approximate for tracks added before your first sync") is no longer accurate. Replaced with "Date added is the file's creation date on this computer." (`source/ui/filter_bar.py`).
+- **Open question — future Serato `database V2` add-date.** Still the truest "when I added it to my library" source, still out of scope (undocumented binary format). Revisit only on request.

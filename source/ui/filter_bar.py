@@ -642,7 +642,7 @@ class DateRangeControl(ctk.CTkFrame):
 
         ctk.CTkLabel(
             self._overlay,
-            text="Dates are approximate for tracks added before your first sync.",
+            text="Date added is the file's creation date on this computer.",
             font=ctk.CTkFont(size=11), text_color=SECONDARY_GREY,
         ).grid(row=4, column=0, sticky="w", padx=8, pady=(2, 8))
 

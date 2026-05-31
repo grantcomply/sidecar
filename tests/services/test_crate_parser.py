@@ -1,10 +1,9 @@
 """Unit tests for ``source.services.crate_parser.parse_all_crates``.
 
-Focus: the ``date_added`` carry-forward logic (Phase 2 of
-suggestion-filter-enhancements) — the highest-risk part of the feature. A
-first-seen track is mtime-seeded, but on later syncs the prior non-zero
-``date_added`` must be carried forward UNCHANGED so the value never drifts to a
-fresh mtime.
+Focus: ``date_added`` is the file's **creation time**, read **fresh on every
+sync** (ADR-013). There is no longer any carry-forward — ``parse_all_crates``
+uses whatever ``get_track_metadata`` seeds (creation time) as-is, and a path
+appearing in two crates is seeded once with both crate names appended.
 
 Real ID3 / binary-crate I/O is avoided by monkeypatching the two module seams
 ``parse_crate_file`` (crate -> relative paths) and ``get_track_metadata``
@@ -16,14 +15,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from source.services import crate_parser
 
-# Fixed epoch timestamps (seconds). The "seed" is what a fresh stat() would
-# return now; the "prior" is the frozen first-seen value carried forward.
-_SEED_MTIME = 1_740_000_000.0   # 2025-02-19 — fresh mtime on re-sync
-_PRIOR_DATE = 1_600_000_000.0   # 2020-09-13 — frozen first-seen value
+# Fixed epoch timestamp (seconds) the stubbed metadata seeds as the creation time.
+_CREATION_TIME = 1_600_000_000.0   # 2020-09-13
 
 
 def _make_crate_files(subcrates_dir: Path, names: list[str]) -> None:
@@ -37,10 +32,10 @@ def _make_crate_files(subcrates_dir: Path, names: list[str]) -> None:
 
 
 def _metadata_stub(date_added: float):
-    """Return a ``get_track_metadata`` replacement that mtime-seeds every track.
+    """Return a ``get_track_metadata`` replacement seeding a fixed ``date_added``.
 
-    Mirrors the real function's contract: a freshly-seen path always carries the
-    seeded ``date_added`` (the value carry-forward must later override).
+    Mirrors the real function's contract: every parsed path carries the seeded
+    creation-time ``date_added`` (used as-is — no carry-forward).
     """
 
     def _get(path: str) -> dict:
@@ -59,43 +54,29 @@ def _metadata_stub(date_added: float):
     return _get
 
 
-def test_carry_forward_overrides_fresh_mtime_no_drift(tmp_path, monkeypatch):
-    """A prior non-zero ``date_added`` wins over the freshly-seeded mtime.
-
-    This is the no-drift guarantee: re-tagging / re-syncing a track refreshes its
-    file mtime, but the first-seen add-date must stay put.
-    """
+def test_date_added_uses_fresh_creation_time(tmp_path, monkeypatch):
+    """``date_added`` is the freshly-seeded creation time from ``get_track_metadata``."""
     subcrates = tmp_path / "Subcrates"
     subcrates.mkdir()
     _make_crate_files(subcrates, ["House.crate"])
 
     track_path = str((tmp_path / "music" / "song.mp3"))
 
-    # Every freshly-parsed track is seeded with the NEW mtime...
-    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_SEED_MTIME))
-    # ...and the crate resolves to one relative path under music_root=tmp_path.
+    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_CREATION_TIME))
     monkeypatch.setattr(
         crate_parser, "parse_crate_file", lambda _crate: ["music/song.mp3"]
     )
 
-    # Prior cache holds a DIFFERENT, older first-seen date for the same path.
-    previous = {track_path: {"date_added": _PRIOR_DATE}}
-
     tracks, _mtimes = crate_parser.parse_all_crates(
-        str(subcrates), music_root=str(tmp_path), previous_tracks=previous
+        str(subcrates), music_root=str(tmp_path)
     )
 
     assert track_path in tracks
-    # The carried-forward prior wins — the date did NOT drift to the new mtime.
-    assert tracks[track_path]["date_added"] == _PRIOR_DATE
-    assert tracks[track_path]["date_added"] != _SEED_MTIME
+    assert tracks[track_path]["date_added"] == _CREATION_TIME
 
 
-def test_carry_forward_across_two_crates_seeds_once_and_appends_crate(
-    tmp_path, monkeypatch
-):
-    """A path in two crates carries the date forward once; the 2nd crate only
-    appends its name (no re-seed, no overwrite of the frozen date)."""
+def test_path_in_two_crates_seeds_once_and_appends_crate(tmp_path, monkeypatch):
+    """A path in two crates is seeded once; the 2nd crate only appends its name."""
     subcrates = tmp_path / "Subcrates"
     subcrates.mkdir()
     # Two crates; sorted() processes "A_Bangers" before "B_Groovers".
@@ -103,66 +84,18 @@ def test_carry_forward_across_two_crates_seeds_once_and_appends_crate(
 
     track_path = str((tmp_path / "music" / "shared.mp3"))
 
-    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_SEED_MTIME))
+    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_CREATION_TIME))
     # Both crates contain the same relative path.
     monkeypatch.setattr(
         crate_parser, "parse_crate_file", lambda _crate: ["music/shared.mp3"]
     )
 
-    previous = {track_path: {"date_added": _PRIOR_DATE}}
-
     tracks, _mtimes = crate_parser.parse_all_crates(
-        str(subcrates), music_root=str(tmp_path), previous_tracks=previous
+        str(subcrates), music_root=str(tmp_path)
     )
 
     assert track_path in tracks
     entry = tracks[track_path]
-    # Frozen date carried forward exactly once — second sighting did not touch it.
-    assert entry["date_added"] == _PRIOR_DATE
+    assert entry["date_added"] == _CREATION_TIME
     # Both crate names appended, each exactly once.
     assert entry["crates"] == ["A_Bangers", "B_Groovers"]
-
-
-def test_no_previous_uses_seeded_mtime(tmp_path, monkeypatch):
-    """With no prior cache, the freshly-seeded mtime is kept (baseline)."""
-    subcrates = tmp_path / "Subcrates"
-    subcrates.mkdir()
-    _make_crate_files(subcrates, ["House.crate"])
-
-    track_path = str((tmp_path / "music" / "song.mp3"))
-
-    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_SEED_MTIME))
-    monkeypatch.setattr(
-        crate_parser, "parse_crate_file", lambda _crate: ["music/song.mp3"]
-    )
-
-    tracks, _mtimes = crate_parser.parse_all_crates(
-        str(subcrates), music_root=str(tmp_path), previous_tracks=None
-    )
-
-    assert tracks[track_path]["date_added"] == _SEED_MTIME
-
-
-def test_carry_forward_skips_zero_prior_date(tmp_path, monkeypatch):
-    """A prior ``date_added`` of 0.0 (unknown) does NOT win — the seed is kept.
-
-    Only a non-zero first-seen value is frozen; an unknown prior re-seeds.
-    """
-    subcrates = tmp_path / "Subcrates"
-    subcrates.mkdir()
-    _make_crate_files(subcrates, ["House.crate"])
-
-    track_path = str((tmp_path / "music" / "song.mp3"))
-
-    monkeypatch.setattr(crate_parser, "get_track_metadata", _metadata_stub(_SEED_MTIME))
-    monkeypatch.setattr(
-        crate_parser, "parse_crate_file", lambda _crate: ["music/song.mp3"]
-    )
-
-    previous = {track_path: {"date_added": 0.0}}
-
-    tracks, _mtimes = crate_parser.parse_all_crates(
-        str(subcrates), music_root=str(tmp_path), previous_tracks=previous
-    )
-
-    assert tracks[track_path]["date_added"] == _SEED_MTIME

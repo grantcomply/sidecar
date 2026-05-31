@@ -7,11 +7,11 @@ import logging
 import os
 import struct
 import sys
-from pathlib import Path
 from typing import Any
 
 from mutagen.id3 import ID3
 from source.services.camelot import parse_camelot
+from source.services.file_times import file_creation_time
 
 logger = logging.getLogger(__name__)
 
@@ -82,15 +82,14 @@ def get_track_metadata(path: str) -> dict[str, Any]:
     """
     file_name = os.path.basename(path)
 
-    # Seed "date added" from the file's modification time. mtime is the only
-    # universally available, cross-platform timestamp (ctime/birthtime differ by
-    # OS — see cross-platform-guide.md and ADR-011-B). Carried forward unchanged on
-    # later syncs by parse_all_crates, so this is only the first-seen seed value.
-    date_added = 0.0
-    try:
-        date_added = Path(path).stat().st_mtime
-    except OSError:
-        pass
+    # "date added" is the file's CREATION time, read cross-platform via
+    # file_times.file_creation_time (st_birthtime / Windows st_ctime / mtime
+    # fallback — see cross-platform-guide.md "File creation time" and ADR-013).
+    # Read fresh on every sync (no carry-forward). file_creation_time swallows
+    # OSError and returns None, which we map to 0.0 = "unknown" — the contract
+    # suggestion_engine.py:88-93's date filter relies on.
+    ct = file_creation_time(path)
+    date_added = ct if ct is not None else 0.0
 
     empty: dict[str, Any] = {
         "file_name": file_name,
@@ -175,7 +174,6 @@ def parse_all_crates(
     subcrates_dir: str,
     music_root: str | None = None,
     progress_callback: Any = None,
-    previous_tracks: dict[str, dict] | None = None,
 ) -> tuple[dict[str, dict], dict[str, float]]:
     """Parse all .crate files and read ID3 metadata for every track.
 
@@ -183,10 +181,6 @@ def parse_all_crates(
         subcrates_dir: Path to Serato Subcrates folder.
         music_root: Root path for resolving track paths.
         progress_callback: Optional callable(message, current, total).
-        previous_tracks: Prior cache's tracks dict (keyed by absolute path). When
-            a path already had a non-zero ``date_added``, that first-seen value is
-            carried forward over the freshly-seeded mtime. The caller supplies this
-            so the parser stays pure (no cache import here — blueprint R2).
 
     Returns:
         (tracks_dict, crate_mtimes_dict) where:
@@ -228,14 +222,8 @@ def parse_all_crates(
             else:
                 meta = get_track_metadata(absolute_path)
                 meta["crates"] = [crate_name]
-                # Carry forward an existing first-seen date over the mtime seed
-                # so re-tagging won't move it. Only a *non-zero* first-seen value
-                # is frozen: a 0.0 (unknown — stat() failed) prior is falsy and
-                # re-seeds from mtime on each sync until a stat() finally succeeds.
-                if previous_tracks:
-                    prev = previous_tracks.get(absolute_path)
-                    if prev and prev.get("date_added"):
-                        meta["date_added"] = prev["date_added"]
+                # date_added is the file's creation time, read fresh each sync by
+                # get_track_metadata (no carry-forward — see ADR-013).
                 tracks[absolute_path] = meta
 
         msg = f"  {crate_name} ({len(rel_paths)} tracks)"

@@ -44,7 +44,7 @@ Pure data structures and collections. No UI knowledge, no service dependencies.
 
 | Component | Responsibility |
 |-----------|---------------|
-| `Track` | Immutable dataclass representing a single track with all metadata. Includes `date_added` (Unix timestamp float) — the first-seen-in-cache time used by the date-range suggestion filter; seeded from file `mtime` on first sight and carried forward across syncs. See ADR-011. |
+| `Track` | Immutable dataclass representing a single track with all metadata. Includes `date_added` (Unix timestamp float) used by the date-range suggestion filter — the file's **creation time** on this machine, read fresh each sync (no carry-forward); `0.0` = unknown. See ADR-013 (supersedes ADR-011 Decision B). |
 | `TrackLibrary` | In-memory collection of tracks with search and crate membership |
 
 ### Services (`services/`)
@@ -97,7 +97,7 @@ In-memory TrackLibrary
                                                  SessionPanel (setlist)
 ```
 
-**Cache schema:** `track_cache.json` is at schema **version 2** (see ADR-007). Each track dict carries a `date_added` first-seen-in-cache timestamp; `crate_sync` reads the previous cache and injects its tracks into `crate_parser.parse_all_crates` so existing `date_added` values are carried forward unchanged while new tracks are mtime-seeded. The `CACHE_VERSION` bump forces a one-time self-healing re-sync on upgrade.
+**Cache schema:** `track_cache.json` is at schema **version 3** (see ADR-007, ADR-013). Each track dict carries a `date_added` timestamp that is the file's **creation time**, read **fresh on every sync** from `crate_parser.get_track_metadata` (via the cross-platform `source/services/file_times.file_creation_time` helper) — there is no carry-forward, so `crate_sync` no longer loads the prior cache to seed it. The `CACHE_VERSION` 2 → 3 bump forces a one-time self-healing re-sync that drops stale v2 mtime values and re-seeds every track from creation time.
 
 **Suggestion filters:** `get_suggestions` now accepts a single `filters: SuggestionFilters` snapshot (`source/services/suggestion_filters.py`, a frozen dataclass) carrying all four filter values — `allowed_crates`, `allowed_genres`, `key_offset` (Camelot wheel re-anchor, default 0), and `date_from` / `date_to` (date-added window). The individual keyword args remain as a fallback for existing call sites/tests. All filtering is in-memory (ADR-002). Filters are **deferred**: changing a control stages it (the live widgets are the staged source of truth); an Apply/Cancel bar in the suggestion panel appears while staged ≠ applied; only Apply commits and re-scores. `app._update_suggestions()` forwards `suggestion_panel.applied_filters` — so a track/session change re-scores with the last-applied filters while staged-but-unapplied edits remain in the controls. The filter controls live in `source/ui/filter_bar.py` (`FilterBar`, `FilterDropdown`, `KeyOffsetControl`, `DateRangeControl`, `FloatingOverlay`); the panel owns the applied snapshot and the Apply/Cancel affordance. See ADR-011 and ADR-012.
 

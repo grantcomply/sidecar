@@ -55,7 +55,8 @@ def get_suggestions(current: Track, library: TrackLibrary,
     inside the score (ADR-010; blueprint R4).
 
     ``date_from`` / ``date_to`` filter candidates by ``track.date_added`` (the
-    first-seen-in-cache Unix timestamp). Both ``None`` (the default) means no date
+    file's creation time on this machine, read fresh each sync; see ADR-013).
+    Both ``None`` (the default) means no date
     filter — today's behaviour. A track with ``date_added == 0.0`` (unknown) is
     excluded when ``date_from`` is set: it can't be proven to be in range
     (blueprint §4).

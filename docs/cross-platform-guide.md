@@ -76,6 +76,21 @@ csv_path = export_dir + "\\" + crate_name + ".csv"
 - Track paths inside .crate files use the OS-native separator from when they were created
 - When reading paths from .crate files, normalize to the current OS: `Path(raw_path)`
 
+## File creation time
+
+The date-added filter sources `Track.date_added` from each file's **creation time** (ADR-013). There is no single cross-platform stat field for this, and the correct field depends on **both** the OS and the Python version, so the logic is isolated in one leaf helper: `source/services/file_times.file_creation_time(path) -> float | None`.
+
+| Platform | Shipping? | Creation-time source (on the bundled **Python 3.11**) | Notes |
+|----------|-----------|--------------------------------------------------------|-------|
+| macOS | Yes | `os.stat().st_birthtime` | True creation time; available on macOS across all supported Python 3 versions. |
+| Windows | Yes | `os.stat().st_ctime` | On **Windows**, `st_ctime` *is* the creation time (not inode-change time). `st_birthtime` is **not** exposed on Windows until **Python 3.12** — so on 3.11 the helper uses `st_ctime`. |
+| Windows (future, 3.12+) | Yes | `st_birthtime` → `st_ctime` | When the bundled interpreter moves to 3.12, `st_birthtime` appears on Windows and is preferred automatically; `st_ctime` remains a correct fallback. No code change needed. |
+| Linux / other | No (dev only) | none reliable → `st_mtime` | `st_ctime` on Linux is inode-change time (wrong meaning); `st_birthtime` is filesystem-dependent and not exposed by CPython. The helper degrades to `mtime` so dev machines stay functional without claiming false accuracy. |
+
+The helper's fallback chain (first hit wins) is: `os.stat` (`OSError` → `None`) → `st_birthtime` if present and `> 0` → `st_ctime` if `sys.platform == "win32"` → `st_mtime`. The `> 0` guard handles filesystems that report `st_birthtime == 0` ("unknown birth"). `None` (stat failed) is distinct from `0.0`; the caller (`crate_parser.get_track_metadata`) maps `None` → `0.0` ("unknown"), which the suggestion engine's date filter excludes when a `date_from` is set.
+
+The **Python 3.11-vs-3.12 Windows `st_birthtime` difference is the reason this helper exists** — a naïve `st_birthtime`-only or `st_ctime`-only read would be wrong on one platform/version combination. See `source/services/file_times.file_creation_time` and ADR-013.
+
 ## Packaging & Distribution
 
 The shipped packaging system is a matrix of per-platform builds driven by a single PyInstaller spec and orchestrated by GitHub Actions. Released via the public repo at `grantcomply/sidecar`.
