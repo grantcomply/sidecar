@@ -10,6 +10,7 @@ from __future__ import annotations
 from source.config import MAX_SUGGESTIONS
 from source.services.camelot import HarmonicTier
 from source.services.suggestion_engine import ScoredTrack, get_suggestions
+from source.services.suggestion_filters import SuggestionFilters
 
 
 def _paths(results: list[ScoredTrack]) -> set[str]:
@@ -415,3 +416,54 @@ def test_get_suggestions_date_none_reproduces_baseline(make_track, make_library)
 
     assert _paths(baseline) == {old.full_file_path, unknown.full_file_path}
     assert _paths(explicit_none) == _paths(baseline)
+
+
+# ── SuggestionFilters snapshot path (ADR-012) ───────────────────────────────
+
+
+def test_get_suggestions_filters_object_matches_crate_kwarg(make_track, make_library):
+    """Passing a filters= snapshot is identical to the equivalent kwargs path."""
+    current = make_track(camelot_key="8A", crates=["House"])
+    in_crate = make_track(camelot_key="9A", crates=["House"])
+    out_crate = make_track(camelot_key="7A", crates=["Techno"])
+    library = make_library([current, in_crate, out_crate])
+
+    via_kwarg = get_suggestions(current, library, allowed_crates={"House"})
+    via_filters = get_suggestions(
+        current, library,
+        filters=SuggestionFilters(allowed_crates=frozenset({"House"})),
+    )
+
+    assert _paths(via_filters) == _paths(via_kwarg)
+    assert in_crate.full_file_path in _paths(via_filters)
+    assert out_crate.full_file_path not in _paths(via_filters)
+
+
+def test_get_suggestions_filters_object_supersedes_kwargs(make_track, make_library):
+    """When filters= is given it supersedes the individual kwargs."""
+    current = make_track(camelot_key="8A", crates=["House"])
+    in_crate = make_track(camelot_key="9A", crates=["House"])
+    out_crate = make_track(camelot_key="7A", crates=["Techno"])
+    library = make_library([current, in_crate, out_crate])
+
+    # The kwarg says Techno, but the filters object (which wins) says House.
+    results = get_suggestions(
+        current, library,
+        allowed_crates={"Techno"},
+        filters=SuggestionFilters(allowed_crates=frozenset({"House"})),
+    )
+
+    assert in_crate.full_file_path in _paths(results)
+    assert out_crate.full_file_path not in _paths(results)
+
+
+def test_get_suggestions_default_filters_object_is_no_filter(make_track, make_library):
+    """A default SuggestionFilters() applies no filtering (reproduces baseline)."""
+    current = make_track(camelot_key="8A")
+    other = make_track(camelot_key="9A")
+    library = make_library([current, other])
+
+    baseline = get_suggestions(current, library)
+    with_filters = get_suggestions(current, library, filters=SuggestionFilters())
+
+    assert _paths(with_filters) == _paths(baseline)

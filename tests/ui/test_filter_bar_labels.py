@@ -6,7 +6,11 @@ These cover the pure label functions extracted from ``KeyOffsetControl`` and
 
 from __future__ import annotations
 
-from source.ui.filter_bar import date_pill_label, key_offset_label
+from source.ui.filter_bar import (
+    date_pill_label,
+    filter_pill_label,
+    key_offset_label,
+)
 
 
 # ── key_offset_label ──
@@ -61,3 +65,31 @@ def test_date_pill_label_from_and_to_uses_en_dash():
     # U+2013 EN DASH between the two dates, per the brief microcopy table.
     assert label == "Added: 2026-01-01 – 2026-03-01"
     assert "–" in label
+
+
+# ── filter_pill_label ──
+
+
+def test_filter_pill_label_all_selected_is_plain_label():
+    # All selected = no filter active = plain label, no count suffix.
+    assert filter_pill_label("Crates", selected=9, total=9) == "Crates"
+
+
+def test_filter_pill_label_empty_list_is_plain_label():
+    # No items loaded behaves like the no-filter default.
+    assert filter_pill_label("Crates", selected=0, total=0) == "Crates"
+
+
+def test_filter_pill_label_zero_selected_reads_none():
+    # The intentional all-cleared state — clearer than "0/N" that it's deliberate.
+    assert filter_pill_label("Crates", selected=0, total=9) == "Crates: none"
+    assert filter_pill_label("Genres", selected=0, total=4) == "Genres: none"
+
+
+def test_filter_pill_label_single_uses_name():
+    assert filter_pill_label(
+        "Crates", selected=1, total=9, only="House") == "Crates: House"
+
+
+def test_filter_pill_label_partial_uses_count():
+    assert filter_pill_label("Crates", selected=3, total=9) == "Crates: 3/9"

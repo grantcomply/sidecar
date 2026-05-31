@@ -299,6 +299,8 @@ class DJTrackSelectorApp(ctk.CTk):
         self._update_suggestions()
 
     def _on_crate_filter_changed(self):
+        # Fired ONLY when the user clicks Apply in the suggestion panel (ADR-012).
+        # Filter edits no longer reach here — they stage in the panel.
         self._update_suggestions()
 
     def _update_suggestions(self):
@@ -306,25 +308,13 @@ class DJTrackSelectorApp(ctk.CTk):
             self.suggestion_panel.clear()
             return
 
-        allowed_crates = None
-        if not self.suggestion_panel.all_crates_selected:
-            allowed_crates = self.suggestion_panel.selected_crates
-
-        allowed_genres = None
-        if not self.suggestion_panel.all_genres_selected:
-            allowed_genres = self.suggestion_panel.selected_genres
-
-        key_offset = self.suggestion_panel.selected_key_offset
-        date_from, date_to = self.suggestion_panel.selected_date_range
-
+        # Re-score with the APPLIED filter snapshot (ADR-012). A track/session
+        # change reuses the last-applied filters; staged-but-unapplied edits live
+        # in the widgets and don't affect results until Apply.
         scored = get_suggestions(
             self._current_track,
             self.library,
             exclude_paths=self.session_panel.played_paths,
-            allowed_crates=allowed_crates,
-            allowed_genres=allowed_genres,
-            key_offset=key_offset,
-            date_from=date_from,
-            date_to=date_to,
+            filters=self.suggestion_panel.applied_filters,
         )
         self.suggestion_panel.set_suggestions(scored)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from source.models.track import Track
 from source.models.library import TrackLibrary
 from source.services.camelot import classify, compatibility_score, shift_key, HarmonicTier
+from source.services.suggestion_filters import SuggestionFilters
 from source.config import (
     SUGGESTION_WEIGHTS,
     BPM_MAX_DIFF,
@@ -29,8 +30,15 @@ def get_suggestions(current: Track, library: TrackLibrary,
                     allowed_genres: set[str] | None = None,
                     key_offset: int = 0,
                     date_from: float | None = None,
-                    date_to: float | None = None) -> list[ScoredTrack]:
+                    date_to: float | None = None,
+                    filters: SuggestionFilters | None = None) -> list[ScoredTrack]:
     """Score and rank all compatible tracks against the current track.
+
+    ``filters`` is the single typed filter snapshot (ADR-012). When provided it
+    SUPERSEDES the individual ``allowed_crates`` / ``allowed_genres`` /
+    ``key_offset`` / ``date_from`` / ``date_to`` keyword args — they are unpacked
+    from it before any filtering runs. The individual kwargs remain as a fallback
+    for callers and tests that don't pass a ``filters`` object.
 
     ``key_offset`` re-anchors the harmonic target up (+) or down (-) the Camelot
     wheel: candidates are scored against ``shift_key(current.camelot_key,
@@ -56,6 +64,14 @@ def get_suggestions(current: Track, library: TrackLibrary,
     w = SUGGESTION_WEIGHTS
     if exclude_paths is None:
         exclude_paths = set()
+
+    # A SuggestionFilters snapshot supersedes the individual keyword args (ADR-012).
+    if filters is not None:
+        allowed_crates = filters.allowed_crates
+        allowed_genres = filters.allowed_genres
+        key_offset = filters.key_offset
+        date_from = filters.date_from
+        date_to = filters.date_to
 
     # Defensive clamp: a future caller passing a raw out-of-range value must not
     # silently re-anchor to an unintended key (blueprint §2).

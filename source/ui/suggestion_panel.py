@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 
 from source.config import CAMELOT_COLORS, energy_color
+from source.services.suggestion_filters import SuggestionFilters, build_filters
 from source.services.waveform import WaveformGenerator
-from source.ui.filter_bar import FilterBar
+from source.ui.filter_bar import FilterBar, FloatingOverlay
 from source.ui.tooltip import Tooltip
 from source.ui.utils import truncate
 from source.ui.waveform_widget import WaveformWidget
@@ -42,6 +43,32 @@ def _score_color(score: float) -> str:
     return "#dc6060"
 
 
+def empty_state_message(
+    *,
+    crates_active_empty: bool,
+    genres_active_empty: bool,
+    date_filter_active: bool,
+) -> str:
+    """Return the suggestion-panel empty-state copy for a zero-result state.
+
+    Precedence (first match wins): a fully-cleared crate filter, then a
+    fully-cleared genre filter, then an active date range, then the generic
+    fallback. A fully-cleared filter is "active but empty" — the user
+    deliberately deselected everything via Clear — so the copy frames it as
+    intentional, not a failure.
+    """
+    if crates_active_empty:
+        return "No crates selected — pick at least one crate to see suggestions."
+    if genres_active_empty:
+        return "No genres selected — pick at least one genre to see suggestions."
+    if date_filter_active:
+        return (
+            "No tracks found in this date range. "
+            "Try a wider window or reset the date filter."
+        )
+    return "No compatible tracks found"
+
+
 # ── Suggestion panel ──
 
 # Column widths for the suggestion grid
@@ -69,6 +96,12 @@ class SuggestionPanel(ctk.CTkFrame):
         self._audio_player = audio_player
         self._waveform_gen = WaveformGenerator()
 
+        # Deferred-apply state (ADR-012): the last-applied filter snapshot. The
+        # live widgets are the staged source; this is the committed value the
+        # rendered list reflects and what Cancel reverts the controls to.
+        # Default = no filters, matching the initial unfiltered render.
+        self._applied_filters: SuggestionFilters = SuggestionFilters()
+
         # Playback UI state
         self._playing_file: str | None = None
         self._playing_row_idx: int | None = None
@@ -94,7 +127,7 @@ class SuggestionPanel(ctk.CTkFrame):
 
         # Filter bar — Crates | Genres | Transition | Added | Reset (brief T3.5).
         # Overlays float over this SuggestionPanel (host), so the list doesn't move.
-        self.filter_bar = FilterBar(self, host=self, on_filter_change=self._filter_changed)
+        self.filter_bar = FilterBar(self, host=self, on_filter_change=self._on_staged_change)
         self.filter_bar.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 3))
 
         # Column headers
@@ -124,7 +157,48 @@ class SuggestionPanel(ctk.CTkFrame):
         self.scroll_frame.grid(row=3, column=0, padx=5, pady=(0, 5), sticky="nsew")
         self.scroll_frame.grid_columnconfigure(0, weight=1)
 
+        # Apply/Cancel bar (Row 4) — deferred-apply affordance (ADR-012, T3.3).
+        # Hidden by default via grid_remove(); shown when staged != applied. Row 4
+        # has no weight, so it slides in below the list without pushing it up.
+        self._build_apply_bar()
+
         self._show_empty("Select a track to see suggestions")
+
+    def _build_apply_bar(self) -> None:
+        """Construct the hidden Apply/Cancel bar in Row 4 (UI brief §Apply/Cancel)."""
+        self._apply_bar = ctk.CTkFrame(
+            self, fg_color=("gray20", "gray20"),
+            border_width=1, border_color="#333333",
+        )
+        self._apply_bar.grid(
+            row=4, column=0, sticky="ew", padx=5, pady=(0, 5),
+        )
+        self._apply_bar.grid_columnconfigure(1, weight=1)  # spacer
+
+        self._apply_bar_label = ctk.CTkLabel(
+            self._apply_bar, text="Filters changed",
+            font=ctk.CTkFont(size=12), text_color="#999999",
+        )
+        self._apply_bar_label.grid(row=0, column=0, padx=(8, 0), pady=6, sticky="w")
+
+        self._cancel_btn = ctk.CTkButton(
+            self._apply_bar, text="Cancel", height=30, width=80, corner_radius=6,
+            fg_color=("gray35", "gray35"), hover_color=("gray45", "gray45"),
+            text_color="#ffffff", font=ctk.CTkFont(size=12),
+            command=self._cancel_filters,
+        )
+        self._cancel_btn.grid(row=0, column=2, padx=(0, 6), pady=6)
+
+        self._apply_btn = ctk.CTkButton(
+            self._apply_bar, text="Apply", height=30, width=80, corner_radius=6,
+            fg_color="#1f6aa5", hover_color="#2980c0", text_color="#ffffff",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._apply_filters,
+        )
+        self._apply_btn.grid(row=0, column=3, padx=(0, 8), pady=6)
+
+        # Hidden until the first dirty change.
+        self._apply_bar.grid_remove()
 
     @property
     def _audio_available(self) -> bool:
@@ -147,12 +221,20 @@ class SuggestionPanel(ctk.CTkFrame):
         return self.filter_bar.crate_filter.all_selected
 
     @property
+    def crates_cleared(self) -> bool:
+        return self.filter_bar.crate_filter.is_cleared
+
+    @property
     def selected_genres(self) -> set[str]:
         return self.filter_bar.genre_filter.selected
 
     @property
     def all_genres_selected(self) -> bool:
         return self.filter_bar.genre_filter.all_selected
+
+    @property
+    def genres_cleared(self) -> bool:
+        return self.filter_bar.genre_filter.is_cleared
 
     @property
     def selected_key_offset(self) -> int:
@@ -162,9 +244,118 @@ class SuggestionPanel(ctk.CTkFrame):
     def selected_date_range(self) -> tuple[float | None, float | None]:
         return self.filter_bar.date_range.selected_date_range
 
-    def _filter_changed(self):
-        if self._on_filter_change:
+    # ── Staged / applied filter state (ADR-012) ──
+
+    def current_staged_filters(self) -> SuggestionFilters:
+        """Assemble an engine-ready snapshot from the live control widgets.
+
+        The ``None``-means-no-filter normalisation lives here (moved out of
+        ``app._update_suggestions``) so every snapshot is engine-ready and dirty
+        comparison is a plain dataclass ``==``.
+        """
+        return build_filters(
+            all_crates_selected=self.all_crates_selected,
+            selected_crates=self.selected_crates,
+            all_genres_selected=self.all_genres_selected,
+            selected_genres=self.selected_genres,
+            key_offset=self.selected_key_offset,
+            date_range=self.selected_date_range,
+        )
+
+    @property
+    def applied_filters(self) -> SuggestionFilters:
+        """The last-applied snapshot — what the rendered list reflects."""
+        return self._applied_filters
+
+    @property
+    def is_dirty(self) -> bool:
+        """True when the staged controls differ from the applied snapshot."""
+        return self.current_staged_filters() != self._applied_filters
+
+    def _on_staged_change(self):
+        """Terminus of a filter edit: recompute dirty + update affordances.
+
+        Does NOT re-score (ADR-012 D3). The only filter-driven re-score path is
+        Apply (``_apply_filters``). On every staged change we (a) show/hide the
+        Apply/Cancel bar based on dirty, and (b) push per-control staged-tint
+        flags so changed pills read the lighter tint until Apply.
+        """
+        staged = self.current_staged_filters()
+        applied = self._applied_filters
+        dirty = staged != applied
+
+        if dirty:
+            self._show_apply_bar()
+        else:
+            self._hide_apply_bar()
+
+        self._update_staged_tints(staged, applied)
+
+    def _update_staged_tints(
+        self, staged: SuggestionFilters, applied: SuggestionFilters
+    ) -> None:
+        """Mark each control staged when its field differs from the applied snapshot."""
+        self.filter_bar.crate_filter.mark_staged(
+            staged.allowed_crates != applied.allowed_crates
+        )
+        self.filter_bar.genre_filter.mark_staged(
+            staged.allowed_genres != applied.allowed_genres
+        )
+        self.filter_bar.key_offset.mark_staged(
+            staged.key_offset != applied.key_offset
+        )
+        self.filter_bar.date_range.mark_staged(
+            (staged.date_from, staged.date_to) != (applied.date_from, applied.date_to)
+        )
+
+    # ── Apply / Cancel (the sole filter-driven re-score trigger) ──
+
+    def _show_apply_bar(self) -> None:
+        self._apply_bar.grid()
+
+    def _hide_apply_bar(self) -> None:
+        self._apply_bar.grid_remove()
+
+    def _apply_filters(self) -> None:
+        """Commit the staged controls and trigger exactly one re-score."""
+        FloatingOverlay.close_open()
+        # Force the date control to commit any typed-but-unconfirmed manual entry
+        # BEFORE we read the staged snapshot or evaluate dirty (review HIGH fix).
+        # This guarantees _range and the committed display text never disagree, so
+        # commit_display() below can't snapshot text that a later Cancel resurrects.
+        # Must run before the dirty guard, or a clean-looking snapshot could skip
+        # it and re-open the divergence (review LOW).
+        self.filter_bar.date_range.commit_pending_entry()
+        staged = self.current_staged_filters()
+        if staged == self._applied_filters:  # guarded no-op (blueprint §4)
+            self._hide_apply_bar()
+            return
+        self._applied_filters = staged
+        self.filter_bar.date_range.commit_display()
+        self._clear_all_staged_tints()
+        self.filter_bar.refresh_reset_visibility()
+        self._hide_apply_bar()
+        if self._on_filter_change:  # app re-score callback — fired ONLY here
             self._on_filter_change()
+
+    def _cancel_filters(self) -> None:
+        """Revert every control to the last-applied snapshot. No re-score."""
+        FloatingOverlay.close_open()
+        f = self._applied_filters
+        self.filter_bar.crate_filter.restore(f.allowed_crates)
+        self.filter_bar.genre_filter.restore(f.allowed_genres)
+        self.filter_bar.key_offset.restore(f.key_offset)
+        self.filter_bar.date_range.restore_display()
+        self.filter_bar.refresh_reset_visibility()
+        self._clear_all_staged_tints()
+        self._hide_apply_bar()
+        # No re-score: the rendered list already reflects _applied_filters.
+
+    def _clear_all_staged_tints(self) -> None:
+        self.filter_bar.crate_filter.mark_staged(False)
+        self.filter_bar.genre_filter.mark_staged(False)
+        self.filter_bar.key_offset.mark_staged(False)
+        self.filter_bar.date_range.mark_staged(False)
 
     def set_suggestions(self, scored_tracks: list):
         """Populate the panel with scored track suggestions."""
@@ -175,15 +366,17 @@ class SuggestionPanel(ctk.CTkFrame):
             w.destroy()
 
         if not scored_tracks:
-            # Date-specific empty copy when the date filter is the active reason
-            # for zero results (brief §Microcopy).
-            if self.selected_date_range != (None, None):
-                self._show_empty(
-                    "No tracks found in this date range. "
-                    "Try a wider window or reset the date filter."
-                )
-            else:
-                self._show_empty("No compatible tracks found")
+            # Frame a fully-cleared crate/genre filter as an intentional empty
+            # state, then the date-range copy, else the generic fallback. Reads
+            # the APPLIED snapshot (ADR-012 R5/T3.7) — the rendered list reflects
+            # applied filters, so a staged-but-unapplied edit must not reword it.
+            # A cleared filter normalises to an empty frozenset() (not None).
+            applied = self._applied_filters
+            self._show_empty(empty_state_message(
+                crates_active_empty=applied.allowed_crates == frozenset(),
+                genres_active_empty=applied.allowed_genres == frozenset(),
+                date_filter_active=(applied.date_from, applied.date_to) != (None, None),
+            ))
             self.header.configure(text="Suggestions (0)")
             return
 

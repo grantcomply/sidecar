@@ -354,3 +354,27 @@ Rejected sources: ID3 `TDRC`/`Track.date` (release date, not add date); Serato `
 
 - **R4 (from ADR-010) — direction leaking into the symmetric core.** A future contributor might "simplify" the offset by making `classify` / `compatibility_score` directional. Mitigation: the boundary is stated in Decision A and the `camelot.py` docstrings; `shift_key` keeps direction in the engine; the symmetry tests fail on any directional change.
 - **R1 — first-sync date accuracy.** Accepted with mitigation (improves over time; honest UI caveat). Open question deferred to the user: whether a future Serato `database V2` parser for true add-dates is worth building. Recommendation: ship first-seen now, revisit only on request.
+
+---
+
+### ADR-012: Deferred filter application with a `SuggestionFilters` snapshot
+- **Status:** Accepted
+- **Date:** 2026-05-30
+- **Relates to:** ADR-011 (introduced the four filter inputs and named `SuggestionFilters` as the next step); ADR-002 (filtering stays in-memory). Resolves architectural debt #11.
+
+- **Context:** Filters applied live — every control `on_change` was wired straight through to a full `get_suggestions` re-score plus a teardown/rebuild of the suggestion grid. A single checkbox toggle in a multi-crate dropdown re-scored the whole library; toggling several in sequence re-scored once per toggle, which the user reported as unresponsiveness. The user asked for staged edits with an explicit Apply/Cancel at the bottom of the suggestion panel, applying only on Apply. This is also the moment ADR-011 flagged for introducing the `SuggestionFilters` value object (debt #11).
+
+- **Decision:**
+  - **D1 — A frozen `SuggestionFilters` value object** (`source/services/suggestion_filters.py`, a leaf module with no UI imports) holds all four filter values in engine-ready form: `allowed_crates`/`allowed_genres` as `frozenset[str] | None` (`None` = no filter), `key_offset: int`, `date_from`/`date_to: float | None`. `frozenset` makes the dataclass hashable and its equality order-independent — dirty detection is free via `==`.
+  - **D2 — The widgets remain the single source of *staged* state; the panel owns one *applied* snapshot** (`SuggestionPanel._applied_filters`). `current_staged_filters()` assembles an engine-ready snapshot from the live controls (the `None`-normalisation moved here from `app._update_suggestions`, extracted to a pure `build_filters()` helper). Dirty = `current_staged_filters() != _applied_filters`.
+  - **D3 — `on_change` is decoupled from re-score.** The control `on_change` → `FilterBar._changed` → `on_filter_change` chain now terminates at `SuggestionPanel._on_staged_change()`, which recomputes dirty, shows/hides the Apply/Cancel bar, and pushes per-control staged-tint flags. It never re-scores.
+  - **D4 — Apply is the sole filter-driven re-score.** `_apply_filters()` sets `_applied_filters = current_staged_filters()`, commits the date control's display snapshot, clears staged tints, hides the bar, and fires the one re-score callback. A track/session change still re-scores via `_update_suggestions`, reading the **applied** snapshot — persisted filters survive a track change while staged-but-unapplied edits remain in the widgets.
+  - **D5 — `get_suggestions` gains `filters: SuggestionFilters | None = None`.** When provided it supersedes the individual keyword args (which remain as a fallback for existing call sites/tests). `_update_suggestions` forwards `suggestion_panel.applied_filters` as one object.
+  - **D6 — Reset stages, it does not apply.** Both per-control `reset()` and the "Reset filters" link restore controls to defaults as a staged change; they surface Apply/Cancel and require Apply to take effect. Cancel, by contrast, restores the controls to the **last-applied** snapshot (via silent `restore(...)` methods on each control; the date control owns a private display snapshot so Cancel reconstructs preset highlight + manual entry text, not just epochs).
+
+- **Consequences:**
+  - Pro: One re-score per Apply instead of one per interaction — fixes the unresponsiveness directly.
+  - Pro: `SuggestionFilters` lands (debt #11 resolved); `get_suggestions` gains a single typed filter argument; dirty detection is free.
+  - Pro: No third copy of state — widgets stay the staged source, the panel owns one applied snapshot; track/session changes correctly reuse the last-applied filters.
+  - Con: Loss of live preview — the explicit, requested trade-off.
+  - Con: One more concept (staged vs applied) and two revert-style affordances (Reset-to-defaults vs Cancel-to-applied), mitigated by distinct labels, a staged-tint pill cue (`#3a88c8` vs applied `#1f6aa5`), and the "Filters changed" Apply/Cancel bar. The date overlay's internal "Apply" button was renamed "Set dates" to avoid a naming collision with the global Apply.
