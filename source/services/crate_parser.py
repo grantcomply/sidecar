@@ -1,30 +1,24 @@
 """
 Parse Serato .crate files and read ID3 metadata for all tracks.
 
-Replaces the old export_crates.py — no CSV writing, just parsing.
+Replaces the old export_crates.py — no CSV writing, just parsing. The ID3
+reader lives in ``tag_reader.py``; its public names are re-exported here.
 """
 import logging
 import os
 import struct
 import sys
+from collections.abc import Callable
 from typing import Any
 
-from mutagen.id3 import ID3
-from source.services.camelot import parse_camelot
-from source.services.file_times import file_creation_time
+# Re-exported so existing callers and the test seam
+# ``monkeypatch.setattr(crate_parser, "get_track_metadata", ...)`` keep working:
+# parse_all_crates looks get_track_metadata up through this module's globals.
+from source.services.tag_reader import KEY_TO_CAMELOT, get_track_metadata, to_camelot  # noqa: F401  re-export
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MUSIC_ROOT = "C:\\" if sys.platform == "win32" else "/"
-
-KEY_TO_CAMELOT = {
-    "C": "8B", "C#": "3B", "Db": "3B", "D": "10B", "D#": "5B", "Eb": "5B",
-    "E": "12B", "F": "7B", "F#": "2B", "Gb": "2B", "G": "9B", "G#": "4B", "Ab": "4B",
-    "A": "11B", "A#": "6B", "Bb": "6B", "B": "1B",
-    "Cm": "5A", "C#m": "12A", "Dbm": "12A", "Dm": "7A", "D#m": "2A", "Ebm": "2A",
-    "Em": "9A", "Fm": "4A", "F#m": "11A", "Gbm": "11A", "Gm": "6A", "G#m": "1A", "Abm": "1A",
-    "Am": "8A", "A#m": "3A", "Bbm": "3A", "Bm": "10A",
-}
 
 
 def parse_crate_file(crate_path: str) -> list[str]:
@@ -57,110 +51,7 @@ def parse_crate_file(crate_path: str) -> list[str]:
         return []
 
 
-def to_camelot(key: str) -> str:
-    """Convert a musical key string to its Camelot wheel notation."""
-    clean_key = key.strip().replace("\u266d", "b").replace(" ", "")
-    # Pass through if already in Camelot notation
-    if parse_camelot(clean_key) is not None:
-        return clean_key
-    return KEY_TO_CAMELOT.get(clean_key, "")
-
-
-def _tag_text(tags: Any, key: str) -> str:
-    """Extract text from an ID3 tag frame, returning empty string if missing."""
-    if key in tags:
-        return str(tags[key].text[0]) if hasattr(tags[key], 'text') else str(tags[key])
-    return ""
-
-
-def get_track_metadata(path: str) -> dict[str, Any]:
-    """Read ID3 tags from a track file and return a metadata dict.
-
-    Returns a dict with keys: file_name, title, artist, album, bpm, key,
-    camelot_key, genre, date, comments, energy_level, play_count, full_file_path.
-    Numeric fields are returned as their native types (float/int).
-    """
-    file_name = os.path.basename(path)
-
-    # "date added" is the file's CREATION time, read cross-platform via
-    # file_times.file_creation_time (st_birthtime / Windows st_ctime / mtime
-    # fallback — see cross-platform-guide.md "File creation time" and ADR-013).
-    # Read fresh on every sync (no carry-forward). file_creation_time swallows
-    # OSError and returns None, which we map to 0.0 = "unknown" — the contract
-    # suggestion_engine.py:88-93's date filter relies on.
-    ct = file_creation_time(path)
-    date_added = ct if ct is not None else 0.0
-
-    empty: dict[str, Any] = {
-        "file_name": file_name,
-        "title": "",
-        "artist": "",
-        "album": "",
-        "bpm": 0.0,
-        "key": "",
-        "camelot_key": "",
-        "genre": "",
-        "date": "",
-        "comments": "",
-        "energy_level": 0,
-        "play_count": 0,
-        "date_added": date_added,
-        "full_file_path": path,
-    }
-    try:
-        tags = ID3(path)
-    except Exception:
-        return empty
-
-    key_raw = _tag_text(tags, 'TKEY')
-    comments = str(tags['COMM::eng']) if 'COMM::eng' in tags else ""
-
-    # Parse BPM as float
-    bpm = 0.0
-    bpm_str = _tag_text(tags, 'TBPM')
-    if bpm_str:
-        try:
-            bpm = float(bpm_str)
-        except ValueError:
-            pass
-
-    # Parse energy level as int
-    energy_level = 0
-    energy_str = _tag_text(tags, 'TXXX:EnergyLevel')
-    if energy_str:
-        try:
-            energy_level = int(energy_str)
-        except ValueError:
-            pass
-
-    # Parse play count as int
-    play_count = 0
-    play_str = _tag_text(tags, 'TXXX:SERATO_PLAYCOUNT')
-    if play_str:
-        try:
-            play_count = int(play_str)
-        except ValueError:
-            pass
-
-    return {
-        "file_name": file_name,
-        "title": _tag_text(tags, 'TIT2'),
-        "artist": _tag_text(tags, 'TPE1'),
-        "album": _tag_text(tags, 'TALB'),
-        "bpm": bpm,
-        "key": key_raw,
-        "camelot_key": to_camelot(key_raw),
-        "genre": _tag_text(tags, 'TCON'),
-        "date": _tag_text(tags, 'TDRC'),
-        "comments": comments,
-        "energy_level": energy_level,
-        "play_count": play_count,
-        "date_added": date_added,
-        "full_file_path": path,
-    }
-
-
-def _crate_display_name(crate_filename: str) -> str:
+def crate_display_name(crate_filename: str) -> str:
     """Convert a .crate filename to a human-readable crate name.
 
     Example: 'House%%Bangers.crate' -> 'House - Bangers'
@@ -170,10 +61,22 @@ def _crate_display_name(crate_filename: str) -> str:
     return name
 
 
+def crate_stem(crate_filename: str) -> str:
+    """'House%%Bangers.crate' -> 'House%%Bangers' (stable Serato native id)."""
+    return crate_filename.removesuffix(".crate")
+
+
+# Legacy private names, kept as aliases for existing callers.
+_crate_display_name = crate_display_name
+_crate_stem = crate_stem
+
+
 def parse_all_crates(
     subcrates_dir: str,
     music_root: str | None = None,
     progress_callback: Any = None,
+    *,
+    crate_key: Callable[[str], str] = crate_display_name,
 ) -> tuple[dict[str, dict], dict[str, float]]:
     """Parse all .crate files and read ID3 metadata for every track.
 
@@ -181,11 +84,14 @@ def parse_all_crates(
         subcrates_dir: Path to Serato Subcrates folder.
         music_root: Root path for resolving track paths.
         progress_callback: Optional callable(message, current, total).
+        crate_key: Maps a .crate filename to the value stored in each track's
+            "crates" list. Defaults to the display name (the v3 cache shape);
+            the Serato provider passes ``crate_stem`` to get stable ids.
 
     Returns:
         (tracks_dict, crate_mtimes_dict) where:
         - tracks_dict is keyed by full file path, value is a metadata dict
-          with a "crates" list of crate names the track belongs to.
+          with a "crates" list of crate keys (``crate_key``) the track belongs to.
         - crate_mtimes_dict maps crate filename to its modification time.
     """
     if music_root is None:
@@ -203,7 +109,9 @@ def parse_all_crates(
 
     for i, crate_file in enumerate(sorted(crate_files)):
         crate_path = os.path.join(subcrates_dir, crate_file)
-        crate_name = _crate_display_name(crate_file)
+        crate_name = crate_key(crate_file)
+        # Progress/log text always uses the display name, whatever crate_key is.
+        crate_label = crate_display_name(crate_file)
 
         # Record crate modification time
         try:
@@ -226,7 +134,7 @@ def parse_all_crates(
                 # get_track_metadata (no carry-forward — see ADR-013).
                 tracks[absolute_path] = meta
 
-        msg = f"  {crate_name} ({len(rel_paths)} tracks)"
+        msg = f"  {crate_label} ({len(rel_paths)} tracks)"
         logger.info("%s", msg)
         if progress_callback:
             progress_callback(msg, i + 1, len(crate_files))

@@ -13,7 +13,7 @@ surface as a warning and must never block startup.
 
 This module is intentionally network-blocking and is meant to be called from
 a background daemon thread. See ``source/app.py`` for the caller. The thread
-pattern mirrors ``source/services/crate_sync.py``.
+pattern mirrors ``source/services/library_sync.py``.
 """
 from __future__ import annotations
 

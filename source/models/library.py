@@ -1,17 +1,22 @@
+from __future__ import annotations
+
 import logging
-import os
-import csv
-from pathlib import Path
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from source.models.track import Track
-from source.services.cache import load_cache
+from source.models.path_identity import path_key
+
+if TYPE_CHECKING:
+    from source.providers.base import CrateInfo
 
 logger = logging.getLogger(__name__)
 
 
 class TrackLibrary:
     def __init__(self):
-        self._tracks: dict[str, Track] = {}  # keyed by full_file_path
+        self._tracks: dict[str, Track] = {}  # keyed by path_identity.path_key
+        self._crates: dict[str, CrateInfo] = {}  # crate id -> info
 
     @property
     def tracks(self) -> list[Track]:
@@ -21,64 +26,47 @@ class TrackLibrary:
     def count(self) -> int:
         return len(self._tracks)
 
-    def load_from_csv_dir(self, csv_dir: str):
-        """Load all CSV files from the given directory, deduplicating by file path."""
-        self._tracks.clear()
+    def replace_all(self, tracks: dict[str, Track], crates: Mapping[str, CrateInfo]) -> None:
+        """Replace the library with already-merged tracks (keyed by path key) and crates."""
+        self._tracks = dict(tracks)
+        self._crates = dict(crates)
 
-        if not os.path.isdir(csv_dir):
-            return
+    def crate_label(self, crate_id: str) -> str:
+        """Display label for a crate id, falling back to the raw id."""
+        info = self._crates.get(crate_id)
+        return info.label if info is not None else crate_id
 
-        csv_files = [f for f in os.listdir(csv_dir) if f.endswith('.csv')]
-
-        for csv_file in sorted(csv_files):
-            crate_name = csv_file.replace('.csv', '')
-            csv_path = os.path.join(csv_dir, csv_file)
-
-            try:
-                with open(csv_path, 'r', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        fp = row.get("FullFilePath", "") or ""
-                        if not fp:
-                            continue
-
-                        if fp in self._tracks:
-                            # Track already loaded — just add this crate
-                            if crate_name not in self._tracks[fp].crates:
-                                self._tracks[fp].crates.append(crate_name)
-                        else:
-                            self._tracks[fp] = Track.from_csv_row(row, crate_name)
-            except Exception as e:
-                logger.error("Error loading %s: %s", csv_file, e)
-
-    def load_from_cache(self, cache_path: Path | None = None) -> bool:
-        """Load all tracks from the JSON cache file.
-
-        Returns True if the cache was loaded successfully, False otherwise.
-        """
-        self._tracks.clear()
-
-        data = load_cache(cache_path)
-        if data is None:
-            return False
-
-        tracks_data = data.get("tracks", {})
-        for file_path, track_data in tracks_data.items():
-            try:
-                self._tracks[file_path] = Track.from_dict(track_data, file_path)
-            except Exception as e:
-                logger.error("Error loading track %s from cache: %s", file_path, e)
-
-        logger.info("Loaded %d tracks from cache", len(self._tracks))
-        return True
+    def track_by_path(self, path: str) -> Track | None:
+        """Look a track up by file path, using the same normalisation as the merge."""
+        return self._tracks.get(path_key(path))
 
     @property
-    def crate_names(self) -> list[str]:
-        """Return sorted list of all unique crate names in the library."""
-        names = set()
+    def crate_items(self) -> list[tuple[str, str]]:
+        """``(id, label)`` for crates holding at least one track.
+
+        Sorted case-insensitively by folder path (Phase 3c, T3c.10), so folder
+        siblings stay together; the app groups the list by ``crate_provider``.
+        """
+        ids: set[str] = set()
         for track in self._tracks.values():
-            names.update(track.crates)
-        return sorted(names)
+            ids.update(track.crates)
+        return sorted(((cid, self.crate_label(cid)) for cid in ids), key=self._crate_sort_key)
+
+    def _crate_sort_key(self, item: tuple[str, str]) -> tuple:
+        cid, label = item
+        info = self._crates.get(cid)
+        path = info.path if info is not None else (label,)
+        return (tuple(part.casefold() for part in path), label.casefold(), cid)
+
+    def crate_provider(self, crate_id: str) -> str | None:
+        """Provider id that owns a crate (``None`` for an unknown id)."""
+        info = self._crates.get(crate_id)
+        return info.provider_id if info is not None else None
+
+    @property
+    def crate_count(self) -> int:
+        """Number of crates holding at least one track (as shown in the crate filter)."""
+        return len(self.crate_items)
 
     @property
     def genre_names(self) -> list[str]:

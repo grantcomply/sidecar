@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from source.models.path_identity import path_key
 from source.models.track import Track
 from source.models.library import TrackLibrary
 from source.services.camelot import classify, compatibility_score, shift_key, HarmonicTier
@@ -87,11 +88,15 @@ def get_suggestions(current: Track, library: TrackLibrary,
             target_key = shifted
     suppress_same_key = key_offset != 0 and target_key != current.camelot_key
 
+    # Compare files by path identity, not raw strings: the same file can arrive
+    # as "C:\Music\A.mp3" from one provider and "c:/music/a.mp3" from another.
+    self_key = path_key(current.full_file_path)
+    excluded = {path_key(p) for p in exclude_paths}
+
     for track in library.tracks:
         # Skip self and session history
-        if track.full_file_path == current.full_file_path:
-            continue
-        if track.full_file_path in exclude_paths:
+        key = path_key(track.full_file_path)
+        if key == self_key or key in excluded:
             continue
 
         # Crate filter: track must belong to at least one allowed crate

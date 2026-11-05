@@ -19,7 +19,7 @@ the ``harmonic_tier`` leaf-module precedent from ADR-010).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -60,4 +60,40 @@ def build_filters(
         key_offset=key_offset,
         date_from=date_from,
         date_to=date_to,
+    )
+
+
+def reconcile_allowed(
+    allowed: frozenset[str] | None,
+    old_keys: frozenset[str],
+    new_keys: frozenset[str],
+) -> frozenset[str] | None:
+    """Carry an allow-set across a live library refresh (ADR-015 D11, T3b.5).
+
+    Mirrors what ``FilterDropdown.set_items(preserve_selection=True)`` does to
+    the checkboxes: kept keys keep their state, new keys arrive selected and
+    removed keys disappear. ``None`` (no filter) stays ``None``, and a set that
+    ends up covering every key becomes ``None``, matching ``build_filters``.
+    So if staged == applied before the refresh, they are still equal after it.
+    """
+    if allowed is None:
+        return None
+    result = (allowed & new_keys) | (new_keys - old_keys)
+    # Covering every key (including "no keys left") reads as no filter, as in the widget.
+    return None if result == new_keys else frozenset(result)
+
+
+def reconcile_filters(
+    filters: SuggestionFilters,
+    *,
+    old_crates: frozenset[str],
+    new_crates: frozenset[str],
+    old_genres: frozenset[str],
+    new_genres: frozenset[str],
+) -> SuggestionFilters:
+    """``filters`` with crate and genre allow-sets reconciled (pure)."""
+    return replace(
+        filters,
+        allowed_crates=reconcile_allowed(filters.allowed_crates, old_crates, new_crates),
+        allowed_genres=reconcile_allowed(filters.allowed_genres, old_genres, new_genres),
     )

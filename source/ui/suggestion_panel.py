@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
+import tkinter as tk
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
 from source.config import CAMELOT_COLORS, energy_color
-from source.services.suggestion_filters import SuggestionFilters, build_filters
+from source.services.library_copy import cleared_filter_message, crates_heading, noun_title
+from source.services.suggestion_filters import SuggestionFilters, build_filters, reconcile_filters
 from source.services.waveform import WaveformGenerator
 from source.ui.filter_bar import FilterBar, FloatingOverlay
 from source.ui.tooltip import Tooltip
@@ -17,6 +20,9 @@ if TYPE_CHECKING:
     from source.services.audio_player import AudioPlayer
 
 logger = logging.getLogger(__name__)
+
+
+QUIET_RETRY_MS = 400  # re-check pointer/preview before a deferred re-render
 
 
 def _score_color(score: float) -> str:
@@ -48,6 +54,7 @@ def empty_state_message(
     crates_active_empty: bool,
     genres_active_empty: bool,
     date_filter_active: bool,
+    noun: str = "crate",
 ) -> str:
     """Return the suggestion-panel empty-state copy for a zero-result state.
 
@@ -58,7 +65,7 @@ def empty_state_message(
     intentional, not a failure.
     """
     if crates_active_empty:
-        return "No crates selected — pick at least one crate to see suggestions."
+        return cleared_filter_message(noun)
     if genres_active_empty:
         return "No genres selected — pick at least one genre to see suggestions."
     if date_filter_active:
@@ -94,6 +101,13 @@ class SuggestionPanel(ctk.CTkFrame):
         self._on_select = on_select
         self._on_filter_change = on_filter_change
         self._audio_player = audio_player
+        self._crate_labels: dict[str, str] = {}  # crate id -> display label
+        self._noun = "crate"  # "crate" or "playlist", from the enabled providers
+        # Quiet (live-refresh) re-render state.
+        self._last_signature: tuple | None = None  # visible content of the rendered list
+        self._pending_quiet: list | None = None  # re-render waiting for pointer/preview
+        self._quiet_retry_id: str | None = None
+        self._pending_on_rendered: Callable[[], None] | None = None
         self._waveform_gen = WaveformGenerator()
 
         # Deferred-apply state (ADR-012): the last-applied filter snapshot. The
@@ -206,11 +220,57 @@ class SuggestionPanel(ctk.CTkFrame):
 
     # ── Public API ──
 
-    def set_crates(self, crate_names: list[str]):
-        self.filter_bar.crate_filter.set_items(crate_names)
+    def set_crates(self, items: Sequence[tuple[str, ...]], *, preserve_selection: bool = False):
+        """Set the crate filter from ``(crate_id, label)`` or ``(crate_id, label, group)`` items."""
+        self._crate_labels = {item[0]: item[1] for item in items}
+        self.filter_bar.crate_filter.set_items(items, preserve_selection=preserve_selection)
 
-    def set_genres(self, genre_names: list[str]):
-        self.filter_bar.genre_filter.set_items(genre_names)
+    def _crate_label(self, crate_id: str) -> str:
+        """Display label for a crate id (falls back to the id itself)."""
+        return self._crate_labels.get(crate_id, crate_id)
+
+    def set_genres(self, genre_names: list[str], *, preserve_selection: bool = False):
+        self.filter_bar.genre_filter.set_items(genre_names, preserve_selection=preserve_selection)
+
+    def reconcile_applied_filters(
+        self,
+        *,
+        old_crates: frozenset[str],
+        new_crates: frozenset[str],
+        old_genres: frozenset[str],
+        new_genres: frozenset[str],
+    ) -> None:
+        """After a live refresh, carry the applied snapshot across changed crate/genre sets.
+
+        Applies the same rule the checkboxes followed (see
+        ``suggestion_filters.reconcile_allowed``), so the Apply bar doesn't
+        appear spuriously; any staged-but-unapplied edits stay staged. No re-score.
+        """
+        self._applied_filters = reconcile_filters(
+            self._applied_filters,
+            old_crates=old_crates, new_crates=new_crates,
+            old_genres=old_genres, new_genres=new_genres,
+        )
+        self._on_staged_change()
+
+    def set_noun(self, noun: str) -> None:
+        """Use "crate" or "playlist" in the filter pill, messages and tooltips."""
+        self._noun = noun
+        self.filter_bar.crate_filter.set_label(noun_title(noun))
+
+    @property
+    def preview_path(self) -> str | None:
+        """File of the active (playing or paused) preview, if any."""
+        return self._playing_file
+
+    def stop_preview(self) -> None:
+        """Stop the preview and reset its row (e.g. its file left the library)."""
+        self._stop_playback()
+
+    @property
+    def is_previewing(self) -> bool:
+        """True while an audio preview is playing or paused (re-rendering would stop it)."""
+        return self._playing_file is not None
 
     @property
     def selected_crates(self) -> set[str]:
@@ -357,8 +417,95 @@ class SuggestionPanel(ctk.CTkFrame):
         self.filter_bar.key_offset.mark_staged(False)
         self.filter_bar.date_range.mark_staged(False)
 
+    # ── Quiet re-render after a live refresh (Phase 3b) ──
+
+    @staticmethod
+    def _signature(scored_tracks: list) -> tuple:
+        """What the list visibly shows; equal signatures need no re-render."""
+        return tuple(
+            (
+                s.track.full_file_path, round(s.total_score, 6), s.harmonic_tier,
+                s.track.title, s.track.artist, s.track.camelot_key,
+                s.track.bpm, s.track.energy, tuple(s.track.crates),
+            )
+            for s in scored_tracks
+        )
+
+    def show_suggestions_quietly(
+        self, scored_tracks: list, *, on_rendered: Callable[[], None] | None = None,
+    ) -> None:
+        """Re-render only if the visible content changed, and never under the DJ.
+
+        Deferred while the pointer is over the list or a preview is active
+        (re-rendering would move rows under the cursor or stop the preview); it
+        runs once the pointer leaves or the preview stops. Keeps the scroll position.
+        ``on_rendered`` runs when the list is (or needs no) update, e.g. to refresh
+        the Now Playing badges in the same moment (brief §5.5).
+        """
+        if self._signature(scored_tracks) == self._last_signature:
+            self.cancel_quiet_render()
+            if on_rendered is not None:
+                on_rendered()
+            return
+        self._pending_quiet = scored_tracks
+        self._pending_on_rendered = on_rendered
+        self._try_quiet_render()
+
+    def _try_quiet_render(self) -> None:
+        # Whoever calls this (refresh, retry timer, preview stop), at most one
+        # retry timer exists afterwards: never stack loops.
+        self._cancel_quiet_timer()
+        pending = self._pending_quiet
+        if pending is None:
+            return
+        if self.is_previewing:
+            return  # resumed from _reset_playback_ui when the preview stops
+        if self._pointer_over_list():
+            self._quiet_retry_id = self.after(QUIET_RETRY_MS, self._try_quiet_render)
+            return
+        canvas = getattr(self.scroll_frame, "_parent_canvas", None)
+        top = canvas.yview()[0] if canvas is not None else None
+        on_rendered = self._pending_on_rendered
+        self.set_suggestions(pending)  # also clears the pending state
+        if canvas is not None and top is not None:
+            self.after_idle(lambda: canvas.yview_moveto(top))
+        if on_rendered is not None:
+            on_rendered()
+
+    def _cancel_quiet_timer(self) -> None:
+        if self._quiet_retry_id is None:
+            return
+        retry_id, self._quiet_retry_id = self._quiet_retry_id, None
+        try:
+            self.after_cancel(retry_id)
+        except (ValueError, tk.TclError) as e:  # already fired, or the widget is gone
+            logger.debug("Quiet-render timer already gone (%s)", type(e).__name__)
+
+    def cancel_quiet_render(self) -> None:
+        """Drop any deferred live-refresh re-render and its retry timer."""
+        self._pending_quiet = None
+        self._pending_on_rendered = None
+        self._cancel_quiet_timer()
+
+    def _pointer_over_list(self) -> bool:
+        try:
+            x, y = self.winfo_pointerxy()
+            widget = self.winfo_containing(x, y)
+        except Exception:  # noqa: BLE001 - pointer outside the app / no display
+            return False
+        if widget is None:
+            return False
+        outer = getattr(self.scroll_frame, "_parent_frame", self.scroll_frame)
+        return str(widget).startswith(str(outer))
+
+    @property
+    def has_pending_quiet_render(self) -> bool:
+        return self._pending_quiet is not None
+
     def set_suggestions(self, scored_tracks: list):
         """Populate the panel with scored track suggestions."""
+        self.cancel_quiet_render()  # an explicit render supersedes any deferred one
+        self._last_signature = self._signature(scored_tracks)
         self._stop_playback()
         self._play_buttons.clear()
 
@@ -376,6 +523,7 @@ class SuggestionPanel(ctk.CTkFrame):
                 crates_active_empty=applied.allowed_crates == frozenset(),
                 genres_active_empty=applied.allowed_genres == frozenset(),
                 date_filter_active=(applied.date_from, applied.date_to) != (None, None),
+                noun=self._noun,
             ))
             self.header.configure(text="Suggestions (0)")
             return
@@ -474,7 +622,8 @@ class SuggestionPanel(ctk.CTkFrame):
                 f"BPM: {int(scored.bpm_score * 100)}%",
             ]
             if track.crates:
-                tip_lines.append(f"\nCrates: {', '.join(track.crates)}")
+                labels = ", ".join(self._crate_label(c) for c in track.crates)
+                tip_lines.append(f"\n{crates_heading(self._noun)}: {labels}")
             Tooltip(row, "\n".join(tip_lines))
 
     # ── Track selection ──
@@ -624,12 +773,16 @@ class SuggestionPanel(ctk.CTkFrame):
 
     def _reset_playback_ui(self) -> None:
         """Reset buttons and waveform without stopping audio (already stopped)."""
+        was_previewing = self._playing_file is not None
         self._stop_polling()
         if self._playing_row_idx is not None:
             self._set_button_icon(self._playing_row_idx, "\u25B6")
         self._playing_file = None
         self._playing_row_idx = None
         self._destroy_waveform()
+        if was_previewing and self._pending_quiet is not None:
+            # A live refresh was waiting for the preview to stop (stale list).
+            self.after_idle(self._try_quiet_render)
 
     def _destroy_waveform(self) -> None:
         if self._waveform_widget is not None:
@@ -650,6 +803,7 @@ class SuggestionPanel(ctk.CTkFrame):
     # ── Existing public API ──
 
     def clear(self):
+        self.cancel_quiet_render()  # a pending refresh render must not repopulate the list
         self._stop_playback()
         self._play_buttons.clear()
         for w in self.scroll_frame.winfo_children():

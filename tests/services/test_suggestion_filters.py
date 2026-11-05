@@ -162,3 +162,76 @@ def test_apply_then_round_trip_is_clean():
         date_range=(1.0, 2.0),
     )
     assert restaged == applied  # no spurious dirty after apply
+
+
+# ── reconcile across a live refresh (T3b.5) ──
+
+import pytest  # noqa: E402
+
+from source.services.suggestion_filters import (  # noqa: E402
+    SuggestionFilters as _SF,
+    build_filters as _build,
+    reconcile_allowed,
+    reconcile_filters,
+)
+
+_F = frozenset
+
+
+def test_reconcile_none_stays_none():
+    assert reconcile_allowed(None, _F("ab"), _F("abc")) is None
+
+
+def test_reconcile_keeps_restriction_drops_removed_adds_new():
+    assert reconcile_allowed(_F("ab"), _F("abc"), _F("bcd")) == _F("bd")
+
+
+def test_reconcile_covering_all_keys_becomes_none():
+    # c (the only unchecked crate) was removed: everything left is selected.
+    assert reconcile_allowed(_F("ab"), _F("abc"), _F("ab")) is None
+    assert reconcile_allowed(_F("a"), _F("a"), _F()) is None  # no keys left
+
+
+def test_reconcile_cleared_stays_cleared_unless_new_keys():
+    assert reconcile_allowed(_F(), _F("ab"), _F("ab")) == _F()
+    assert reconcile_allowed(_F(), _F("ab"), _F("abc")) == _F("c")
+
+
+def _widget_after(selected: set[str], old: set[str], new: set[str]) -> tuple[bool, set[str]]:
+    """What FilterDropdown(preserve_selection=True) ends with: (all_selected, selected)."""
+    kept = {k for k in new if (k in selected) or (k not in old)}
+    return all(k in kept for k in new), kept
+
+
+@pytest.mark.parametrize(
+    ("selected", "old", "new"),
+    [
+        ({"a", "b", "c"}, {"a", "b", "c"}, {"a", "b", "c", "d"}),
+        ({"a", "b"}, {"a", "b", "c"}, {"a", "b", "d"}),
+        ({"a", "b"}, {"a", "b", "c"}, {"a", "b"}),
+        (set(), {"a", "b"}, {"a", "b", "c"}),
+        ({"a"}, {"a", "b"}, set()),
+    ],
+)
+def test_reconciled_applied_matches_reconciled_widget(selected, old, new):
+    # Before: clean (staged == applied). After: still clean.
+    applied = _build(all_crates_selected=selected == old, selected_crates=selected,
+                     all_genres_selected=True, selected_genres=set(),
+                     key_offset=0, date_range=(None, None))
+    all_sel, kept = _widget_after(selected, old, new)
+    staged_after = _build(all_crates_selected=all_sel, selected_crates=kept,
+                          all_genres_selected=True, selected_genres=set(),
+                          key_offset=0, date_range=(None, None))
+
+    applied_after = reconcile_filters(applied, old_crates=_F(old), new_crates=_F(new),
+                                      old_genres=_F(), new_genres=_F())
+
+    assert applied_after == staged_after
+
+
+def test_reconcile_filters_leaves_other_fields_alone():
+    f = _SF(allowed_crates=_F("a"), allowed_genres=_F({"House"}), key_offset=1,
+            date_from=1.0, date_to=2.0)
+    out = reconcile_filters(f, old_crates=_F("ab"), new_crates=_F("ab"),
+                            old_genres=_F({"House", "Techno"}), new_genres=_F({"House", "Techno"}))
+    assert out == f

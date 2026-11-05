@@ -66,3 +66,10 @@ def test_generic_fallback_when_nothing_active():
         genres_active_empty=False,
         date_filter_active=False,
     ) == _GENERIC
+
+
+def test_cleared_crate_filter_uses_playlist_noun():
+    assert empty_state_message(
+        crates_active_empty=True, genres_active_empty=False, date_filter_active=False,
+        noun="playlist",
+    ) == "No playlists selected — pick at least one playlist to see suggestions."

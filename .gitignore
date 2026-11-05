@@ -24,3 +24,7 @@ dist/
 /build/SeratoSidecar/
 *.pyz
 
+
+# rekordbox spike output (contains personal track names/paths)
+scripts/spike_rekordbox_output_*.txt
+scripts/spike_rekordbox.py

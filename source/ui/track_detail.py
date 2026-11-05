@@ -1,6 +1,9 @@
+from collections.abc import Callable
+
 import customtkinter as ctk
 from source.models.track import Track
 from source.config import CAMELOT_COLORS, energy_color
+from source.services.library_copy import DEFAULT_DASHBOARD_PROMPT, crates_heading
 from source.ui.utils import truncate
 
 
@@ -16,6 +19,11 @@ class NowPlayingDashboard(ctk.CTkFrame):
         super().__init__(master, **kwargs)
         self._on_track_selected = on_track_selected
         self._search_fn = None
+        self._crate_noun = "crate"
+        self._empty_message = DEFAULT_DASHBOARD_PROMPT
+        self._showing_track = False
+        self._shown_track: Track | None = None
+        self._crate_label_fn: Callable[[str], str] = lambda crate_id: crate_id
         self._debounce_id = None
 
         self.grid_columnconfigure(0, weight=1)
@@ -75,7 +83,7 @@ class NowPlayingDashboard(ctk.CTkFrame):
         self.artist_label.grid(row=0, column=0, sticky="w")
 
         self.title_label = ctk.CTkLabel(
-            self.track_frame, text="Search for a track to begin",
+            self.track_frame, text=DEFAULT_DASHBOARD_PROMPT,
             font=ctk.CTkFont(size=24, weight="bold"), anchor="w",
         )
         self.title_label.grid(row=1, column=0, sticky="w", pady=(0, 10))
@@ -124,11 +132,44 @@ class NowPlayingDashboard(ctk.CTkFrame):
         """Set the search function: fn(query) -> list[Track]."""
         self._search_fn = fn
 
+    def set_crate_noun(self, noun: str) -> None:
+        if noun == self._crate_noun:
+            return
+        self._crate_noun = noun
+        if self._shown_track is not None:
+            self._render(self._shown_track)  # the info line's "Crates:"/"Playlists:" label
+
+    def set_empty_message(self, text: str | None) -> None:
+        """Placeholder while no track is shown; ``None`` restores the default prompt.
+
+        Never overwrites a selected track's title.
+        """
+        self._empty_message = text or DEFAULT_DASHBOARD_PROMPT
+        if not self._showing_track:
+            self.title_label.configure(text=self._empty_message)
+
+    def set_crate_label_fn(self, fn: Callable[[str], str]) -> None:
+        """Set the crate id -> display label function used in the info line."""
+        self._crate_label_fn = fn
+
     def set_track(self, track: Track):
         """Update the dashboard to display the given track."""
         self.search_var.set(track.display_name)
         self._hide_dropdown()
+        self.refresh_track(track)
 
+    def refresh_track(self, track: Track) -> None:
+        """Re-render the track's labels, badges and info line only.
+
+        Used by a quiet library refresh: unlike ``set_track`` it leaves the
+        search box and its dropdown alone, so a refresh never overwrites
+        what the DJ is typing.
+        """
+        self._showing_track = True
+        self._shown_track = track
+        self._render(track)
+
+    def _render(self, track: Track) -> None:
         self.artist_label.configure(text=track.artist)
         self.title_label.configure(text=track.title or track.file_name)
 
@@ -163,10 +204,10 @@ class NowPlayingDashboard(ctk.CTkFrame):
         if track.play_count:
             parts.append(f"Plays: {track.play_count}")
         if track.crates:
-            crate_str = ", ".join(track.crates[:3])
+            crate_str = ", ".join(self._crate_label_fn(c) for c in track.crates[:3])
             if len(track.crates) > 3:
                 crate_str += f" (+{len(track.crates) - 3})"
-            parts.append(f"Crates: {crate_str}")
+            parts.append(f"{crates_heading(self._crate_noun)}: {crate_str}")
         self.info_label.configure(text="  ·  ".join(parts))
 
     # ── Search logic ──

@@ -20,78 +20,15 @@ class Track:
     play_count: int = 0
     date_added: float = 0.0  # file creation time (Unix timestamp), read fresh each sync; 0.0 = unknown. See ADR-013.
     full_file_path: str = ""
-    crates: list = field(default_factory=list)
+    crates: list[str] = field(default_factory=list)  # crate ids (ADR-015 D3)
+    sources: tuple[str, ...] = ()  # provider ids holding this file, precedence order (D6)
     search_text: str = ""
 
     @classmethod
-    def from_csv_row(cls, row: dict, crate_name: str = "") -> "Track":
-        """Create a Track from a CSV row dict."""
-        # Parse BPM
-        bpm = 0.0
-        try:
-            bpm = float(row.get("BPM", "") or "0")
-        except ValueError:
-            pass
-
-        # Parse play count
-        play_count = 0
-        try:
-            play_count = int(row.get("PlayCount", "") or "0")
-        except ValueError:
-            pass
-
-        # Get Camelot key from CSV column
-        camelot_key = (row.get("CamelotKey", "") or "").strip()
-
-        # Energy from CSV column
-        energy = 0
-        energy_str = (row.get("EnergyLevel", "") or "").strip()
-        if energy_str:
-            try:
-                energy = int(energy_str)
-            except ValueError:
-                pass
-
-        # Parse Camelot into number/letter
-        camelot_number = 0
-        camelot_letter = ""
-        parsed = parse_camelot(camelot_key)
-        if parsed:
-            camelot_number, camelot_letter = parsed
-
-        title = row.get("Title", "") or ""
-        artist = row.get("Artist", "") or ""
-        file_name = row.get("FileName", "") or ""
-
-        crates = [crate_name] if crate_name else []
-
-        search_text = f"{title} {artist} {file_name}".lower()
-
-        return cls(
-            file_name=file_name,
-            title=title,
-            artist=artist,
-            album=row.get("Album", "") or "",
-            bpm=bpm,
-            key=row.get("Key", "") or "",
-            camelot_key=camelot_key,
-            camelot_number=camelot_number,
-            camelot_letter=camelot_letter,
-            genre=row.get("Genre", "") or "",
-            date=row.get("Date", "") or "",
-            comments=row.get("Comments", "") or "",
-            energy=energy,
-            play_count=play_count,
-            full_file_path=row.get("FullFilePath", "") or "",
-            crates=crates,
-            search_text=search_text,
-        )
-
-    @classmethod
     def from_dict(cls, data: dict, file_path: str = "") -> "Track":
-        """Create a Track from a cache dict entry (JSON-sourced).
+        """Create a Track from a library snapshot track dict (JSON-sourced).
 
-        Unlike from_csv_row(), numeric fields are already their native types.
+        Numeric fields are already their native types; values are coerced defensively.
         """
         bpm = 0.0
         try:
@@ -134,6 +71,7 @@ class Track:
         full_path = data.get("full_file_path", file_path) or file_path
 
         crates = list(data.get("crates", []))
+        sources = tuple(data.get("sources", ()))  # set by library_merge; never stored
         search_text = f"{title} {artist} {file_name}".lower()
 
         return cls(
@@ -154,6 +92,7 @@ class Track:
             date_added=date_added,
             full_file_path=full_path,
             crates=crates,
+            sources=sources,
             search_text=search_text,
         )
 

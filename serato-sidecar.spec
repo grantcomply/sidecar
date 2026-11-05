@@ -14,7 +14,7 @@ Phase 2 of plans/deployment-plan.md.
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 # ---------------------------------------------------------------------------
 # Version — single source of truth lives in source/__version__.py.
@@ -36,13 +36,19 @@ IS_MACOS = sys.platform == "darwin"
 # static analyser misses them unless we explicitly collect the package.
 # ---------------------------------------------------------------------------
 ctk_datas, ctk_binaries, ctk_hiddenimports = collect_all("customtkinter")
+# rekordbox support (ADR-015 D8): pyrekordbox ships data files (e.g. its key
+# blob, schema JSON) and sqlcipher3 is a native extension.
+rb_datas, rb_binaries, rb_hiddenimports = collect_all("pyrekordbox")
+sc_datas, sc_binaries, sc_hiddenimports = collect_all("sqlcipher3")
 
 datas = [
     ("source/ui/SeratoSidecarLogo.png", "source/ui"),
 ]
-datas += ctk_datas
+datas += ctk_datas + rb_datas + sc_datas
+# Package metadata so --check-rekordbox-library can report their versions.
+datas += copy_metadata("SQLAlchemy") + copy_metadata("psutil")
 
-binaries = list(ctk_binaries)
+binaries = list(ctk_binaries) + list(rb_binaries) + list(sc_binaries)
 
 # ---------------------------------------------------------------------------
 # Hidden imports.
@@ -58,11 +64,30 @@ hiddenimports = [
     "source.models",
     "source.models.track",
     "source.models.library",
+    "source.models.path_identity",
+    "source.providers",
+    "source.providers.base",
+    "source.providers.registry",
+    "source.providers.rekordbox",
+    "source.providers.rekordbox.provider",
+    "source.providers.rekordbox.paths",
+    "source.providers.rekordbox.db_copy",
+    "source.providers.rekordbox.db_reader",
+    "source.providers.rekordbox.energy_cache",
+    "source.providers.rekordbox.mapping",
+    "source.providers.serato",
+    "source.providers.serato.provider",
     "source.services",
-    "source.services.cache",
     "source.services.camelot",
     "source.services.crate_parser",
-    "source.services.crate_sync",
+    "source.services.tag_reader",
+    "source.services.library_sync",
+    "source.services.library_store",
+    "source.services.library_merge",
+    "source.services.settings_migration",
+    "source.services.log_safety",
+    "source.services.comment_format",
+    "source.services.diagnostics",
     "source.services.suggestion_engine",
     "source.ui",
     "source.ui.session_panel",
@@ -72,7 +97,9 @@ hiddenimports = [
     "source.ui.track_detail",
     "source.ui.utils",
 ]
-hiddenimports += ctk_hiddenimports
+hiddenimports += ctk_hiddenimports + rb_hiddenimports + sc_hiddenimports
+# SQLAlchemy loads its dialect modules dynamically from the connection URL.
+hiddenimports += collect_submodules("sqlalchemy.dialects.sqlite")
 
 # ---------------------------------------------------------------------------
 # Icons. Windows uses .ico, macOS uses .icns. The .icns file is NOT generated

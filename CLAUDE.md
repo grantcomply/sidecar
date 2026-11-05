@@ -7,7 +7,7 @@ Desktop application that helps DJs pick the next track during a set. Reads Serat
 - **Language:** Python 3.10+
 - **UI:** CustomTkinter (dark theme, blue accents)
 - **Audio metadata:** Mutagen (ID3 tag reading)
-- **Data storage:** JSON cache file (track_cache.json) + in-memory TrackLibrary
+- **Data storage:** Per-provider JSON snapshots (`library/<provider>.json`) merged into an in-memory TrackLibrary
 - **Config:** `.env` file for user settings, `config.py` for app constants
 
 ## Project Structure
@@ -17,20 +17,43 @@ serato-sidecar/
 ├── app.py                   # Main window, event wiring, layout
 ├── config.py                # Settings, weights, affinity matrix, colors
 ├── models/
-│   ├── track.py             # Track dataclass + from_dict/from_csv_row parsing
-│   └── library.py           # TrackLibrary collection, search, crate tracking
+│   ├── track.py             # Track dataclass + from_dict parsing
+│   ├── path_identity.py     # path_key(): file-path identity (stdlib-only leaf)
+│   └── library.py           # TrackLibrary collection, search, crate index (id → label)
+├── providers/
+│   ├── base.py              # LibraryProvider protocol + snapshot types (stdlib-only, no project imports)
+│   ├── registry.py          # Provider registry (get_provider, all_providers)
+│   ├── serato/provider.py   # SeratoProvider
+│   └── rekordbox/           # RekordboxProvider (reads a private copy of master.db via pyrekordbox)
+│       ├── provider.py      # RekordboxProvider
+│       ├── paths.py         # DB location, change token, track path resolution
+│       ├── db_copy.py       # Copy master.db (+ -wal) to a temp dir; never touches the original
+│       ├── db_reader.py     # Only module that imports pyrekordbox; key never logged
+│       ├── mapping.py       # rekordbox rows → TrackRecord
+│       └── energy_cache.py  # File-tag energy fallback cache
 ├── services/
-│   ├── cache.py             # JSON cache read/write (track_cache.json)
 │   ├── camelot.py           # Harmonic key compatibility scoring
-│   ├── comments_parser.py   # ID3 Comments field parser
-│   ├── crate_parser.py      # Serato .crate binary parser + ID3 metadata reader
-│   ├── crate_sync.py        # Background thread sync wrapper
-│   └── suggestion_engine.py # Track scoring algorithm
+│   ├── crate_parser.py      # Serato .crate binary parser
+│   ├── tag_reader.py        # ID3 metadata reader + key → Camelot conversion
+│   ├── library_sync.py      # Background sync across enabled providers + single-flight SyncCoordinator
+│   ├── library_watcher.py   # Live refresh: polls provider change tokens (adaptive backoff, refresh on focus)
+│   ├── sync_outcome.py      # Pure rules for what the app does after a sync (reload, toasts, dialog state)
+│   ├── library_copy.py      # Every user-visible string for sources, sync and settings
+│   ├── settings_model.py    # Settings dialog view-model (one view per provider)
+│   ├── library_store.py     # Per-provider snapshots (library/<provider>.json); converts legacy track_cache.json
+│   ├── library_merge.py     # Path identity + merging provider snapshots into one library
+│   ├── settings_migration.py # One-time startup settings migration (schema 2, PROVIDERS_ENABLED)
+│   ├── log_safety.py        # Pins pyrekordbox/sqlalchemy loggers above DEBUG (key safety)
+│   ├── comment_format.py    # "<key> - <energy> - <category> - ..." comment parser
+│   ├── diagnostics.py       # --self-check-rekordbox / --check-rekordbox-library reports
+│   ├── suggestion_engine.py # Track scoring algorithm
+│   ├── suggestion_filters.py, harmonic_tier.py, dates.py, file_times.py  # Filter + scoring helpers
+│   └── audio_player.py, waveform.py, updater.py  # Preview playback, waveform, auto-update
 ├── ui/
 │   ├── track_detail.py      # Now Playing dashboard with badges
 │   ├── suggestion_panel.py  # Scored suggestions grid + crate filter
 │   ├── session_panel.py     # Setlist/history panel
-│   ├── sync_panel.py        # Settings dialog (folder picker + sync)
+│   ├── sync_panel.py        # Settings dialog: one card per music source (switch, settings, status) + sync
 │   ├── search_panel.py      # Autocomplete search dropdown
 │   └── tooltip.py           # Hover tooltip utility
 └── docs/                    # Architectural documentation (maintained by architect agent)

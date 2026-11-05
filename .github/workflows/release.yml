@@ -61,7 +61,8 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          # Wheels only for the native deps: never build SQLCipher from source in CI.
+          pip install --only-binary=sqlcipher3-wheels,psutil -r requirements.txt pyinstaller
 
       - name: Derive version from tag
         id: version
@@ -97,6 +98,15 @@ jobs:
       - name: Build with PyInstaller
         shell: bash
         run: pyinstaller serato-sidecar.spec --noconfirm
+
+      - name: Frozen rekordbox self-check
+        timeout-minutes: 5
+        # The exe is windowed, so wait for it explicitly and use its exit code.
+        # Imports pyrekordbox + sqlcipher3 in the frozen build; no database access.
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\SeratoSidecar\SeratoSidecar.exe" -ArgumentList "--self-check-rekordbox" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "rekordbox self-check failed ($($p.ExitCode))"; exit 1 }
 
       - name: Compile Inno Setup installer
         # Minionguyjpro/Inno-Setup-Action is the de-facto standard installer
@@ -150,7 +160,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          # Wheels only for the native deps: never build SQLCipher from source in CI.
+          pip install --only-binary=sqlcipher3-wheels,psutil -r requirements.txt pyinstaller
 
       - name: Derive version from tag
         id: version
@@ -201,6 +212,12 @@ jobs:
         # The spec's BUNDLE block (macOS only) wraps the one-folder output
         # into dist/SeratoSidecar.app with the right Info.plist.
         run: pyinstaller serato-sidecar.spec --noconfirm
+
+      - name: Frozen rekordbox self-check
+        timeout-minutes: 5
+        # If this fails for lack of a macOS sqlcipher3 wheel, stop and report;
+        # don't build SQLCipher from source (implementation plan T3.1).
+        run: dist/SeratoSidecar.app/Contents/MacOS/SeratoSidecar --self-check-rekordbox
 
       - name: Zip the .app bundle with ditto
         # CRITICAL: must use `ditto`, not plain `zip`. Plain zip mangles

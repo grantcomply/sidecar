@@ -1,4 +1,7 @@
+from collections.abc import Callable
+
 import customtkinter as ctk
+from source.models.path_identity import path_key
 from source.models.track import Track
 from source.config import CAMELOT_COLORS, energy_color
 from source.ui.utils import truncate
@@ -62,9 +65,23 @@ class SessionPanel(ctk.CTkFrame):
 
     # ── Public API ──
 
+    def rebind_tracks(self, resolve: Callable[[str], Track | None]) -> None:
+        """Swap each entry for the library's current object for the same file.
+
+        Used by a quiet library refresh. Order is kept, and entries whose file
+        is no longer in the library stay as they were (``played_paths`` is unchanged).
+        """
+        rebound = [resolve(t.full_file_path) or t for t in self._tracks]
+        unchanged = rebound == self._tracks  # Track is a dataclass: compared by value
+        self._tracks = rebound
+        if not unchanged:
+            self._rebuild()
+
     def add_track(self, track: Track):
-        # Don't add duplicates consecutively
-        if self._tracks and self._tracks[-1].full_file_path == track.full_file_path:
+        # Don't add duplicates consecutively (same file by path identity)
+        if self._tracks and path_key(self._tracks[-1].full_file_path) == path_key(
+            track.full_file_path,
+        ):
             return
         self._tracks.append(track)
         self._rebuild()

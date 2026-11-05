@@ -25,14 +25,19 @@ Design tokens, microcopy, and states follow
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Sequence
 from typing import Callable
 
 import customtkinter as ctk
 
+from source.services import library_copy as copy
+from source.services.library_copy import overlay_empty_text
+from source.ui.tooltip import Tooltip
+
 from source.config import KEY_OFFSET_RANGE
 from source.services.dates import date_range_to_epoch
 from source.ui.tooltip import Tooltip
-from source.ui.utils import truncate
+from source.ui.utils import truncate, truncate_start
 
 # ── Shared visual tokens (brief §Sub-feature 1 / §Finding 4) ──
 ACCENT_BLUE = "#1f6aa5"
@@ -92,6 +97,12 @@ def date_pill_label(
     return f"Added: from {from_str}"
 
 
+def _singular(label: str) -> str:
+    """``"Playlists"`` → ``"playlist"``, ``"Genres"`` → ``"genre"``."""
+    word = label.lower()
+    return word[:-1] if word.endswith("s") else word
+
+
 def filter_pill_label(label: str, selected: int, total: int, *, only: str | None = None) -> str:
     """Return the ``FilterDropdown`` pill text for a given selection state.
 
@@ -124,13 +135,20 @@ class FloatingOverlay(ctk.CTkFrame):
     # The currently-open overlay across the whole app (one-at-a-time invariant).
     _open: "FloatingOverlay | None" = None
 
-    def __init__(self, host: tk.Widget, trigger: tk.Widget, **kwargs) -> None:
+    def __init__(
+        self,
+        host: tk.Widget,
+        trigger: tk.Widget,
+        on_close: Callable[[], None] | None = None,
+        **kwargs,
+    ) -> None:
         kwargs.setdefault("corner_radius", 8)
         kwargs.setdefault("border_width", 1)
         kwargs.setdefault("border_color", SEPARATOR_GREY)
         super().__init__(host, **kwargs)
         self._host = host
         self._trigger = trigger
+        self._on_close = on_close
         self._click_binding: str | None = None
         self._escape_binding: str | None = None
         # Pending after_idle id for the deferred watcher registration (see open()).
@@ -187,6 +205,8 @@ class FloatingOverlay(ctk.CTkFrame):
 
     def close(self) -> None:
         """Hide the overlay and detach its watchers."""
+        if self._on_close is not None:
+            self._on_close()
         # Cancel a still-pending deferred watcher registration so we never leave a
         # dangling after_idle callback that would bind onto a closed overlay.
         if self._watcher_after is not None:
@@ -251,6 +271,25 @@ class FloatingOverlay(ctk.CTkFrame):
 # ── Filter dropdown pill (T3.4) ──
 
 
+DEFAULT_OVERLAY_SIZE = (200, 200)
+CRATE_OVERLAY_SIZE = (300, 320)  # playlist filter at scale (UI audit H1)
+SEARCH_DEBOUNCE_MS = 150  # as the dashboard search (track_detail.py)
+LABEL_TRUNCATE_AT = 38
+MIN_OVERLAY_WIDTH = 200
+MIN_LIST_HEIGHT = 120
+_OVERLAY_EDGE = 8
+_OVERLAY_CHROME = 110  # search box + buttons + paddings above the list
+
+
+class _Row:
+    """One checklist row (or group header), built once and hidden/shown by search."""
+
+    __slots__ = ("key", "label", "group", "widget")
+
+    def __init__(self, key: str | None, label: str, group: str | None, widget) -> None:
+        self.key, self.label, self.group, self.widget = key, label, group, widget
+
+
 class FilterDropdown(ctk.CTkFrame):
     """A pill button whose multi-select checklist lives in a floating overlay.
 
@@ -267,14 +306,24 @@ class FilterDropdown(ctk.CTkFrame):
         host: tk.Widget,
         label: str,
         on_change: Callable[[], None] | None = None,
+        *,
+        searchable: bool = False,
+        overlay_size: tuple[int, int] = DEFAULT_OVERLAY_SIZE,
         **kwargs,
     ) -> None:
         kwargs.setdefault("fg_color", "transparent")
         super().__init__(master, **kwargs)
+        self._searchable = searchable
+        self._overlay_size = overlay_size
+        self._rows: list[_Row] = []
+        self._search_after: str | None = None
+        self._no_match: ctk.CTkLabel | None = None
         self._on_change = on_change
         self._label = label
         self._host = host
-        self._vars: dict[str, tk.BooleanVar] = {}
+        self._vars: dict[str, tk.BooleanVar] = {}  # keyed by item key (e.g. crate id)
+        self._labels: dict[str, str] = {}  # item key -> display label
+        self._items: list[tuple[str, str, str | None]] = []  # current (key, label, group)
         self._is_staged = False  # staged-tint flag (T3.9)
 
         self.pill = ctk.CTkButton(
@@ -285,14 +334,25 @@ class FilterDropdown(ctk.CTkFrame):
         )
         self.pill.pack()
 
-        self._overlay = FloatingOverlay(host, self)
+        # Decided: the search text clears on close, so the list always reopens unfiltered.
+        self._overlay = FloatingOverlay(host, self, on_close=self._clear_search)
         self._overlay.grid_columnconfigure(0, weight=1)
+
+        # Optional search box (type-to-filter, T3c.10) above the buttons.
+        self._search: ctk.CTkEntry | None = None
+        if searchable:
+            self._search = ctk.CTkEntry(
+                self._overlay, height=26, font=ctk.CTkFont(size=11),
+                placeholder_text=copy.find_placeholder(_singular(label)),
+            )
+            self._search.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+            self._search.bind("<KeyRelease>", lambda _e: self._schedule_search())
 
         # "Select all" + "Clear" sit side by side at the top of the overlay.
         # "Clear" (deselect-all) is paired with an intentional empty-state message
         # in the suggestion panel so a fully-cleared filter no longer reads as a bug.
         actions = ctk.CTkFrame(self._overlay, fg_color="transparent")
-        actions.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        actions.grid(row=1, column=0, sticky="ew", padx=8, pady=(8, 4))
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
 
@@ -312,20 +372,50 @@ class FilterDropdown(ctk.CTkFrame):
         )
         self._clear_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
 
-        self.checklist = ctk.CTkScrollableFrame(self._overlay, height=200, width=200)
-        self.checklist.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 8))
+        width, height = overlay_size
+        self.checklist = ctk.CTkScrollableFrame(self._overlay, height=height, width=width)
+        self.checklist.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 8))
         self.checklist.grid_columnconfigure(0, weight=1)
 
         self._empty_label: ctk.CTkLabel | None = None
 
-    def set_items(self, names: list[str]):
+    def set_items(
+        self,
+        items: Sequence[str | tuple[str, ...]],
+        *,
+        preserve_selection: bool = False,
+    ):
+        """Rebuild the checklist.
+
+        Each item is a plain string (key and label), a ``(key, label)`` pair or a
+        ``(key, label, group)`` triple. With two or more groups, a non-interactive
+        header precedes each group (in the order given); one group renders flat.
+        ``selected`` / ``restore`` work on keys; checkboxes show labels.
+
+        By default every item starts checked. With ``preserve_selection`` (live
+        refresh), existing keys keep their checked state, new keys start
+        checked and removed keys are dropped; ``on_change`` is not fired.
+        """
+        triples: list[tuple[str, str, str | None]] = []
+        for item in items:
+            if isinstance(item, str):
+                triples.append((item, item, None))
+            else:
+                triples.append((item[0], item[1], item[2] if len(item) > 2 else None))
+        if preserve_selection and triples == self._items:
+            return  # live refresh with nothing new: no rebuild, no flicker in an open list
+        self._items = list(triples)
+        previous = {key: var.get() for key, var in self._vars.items()} if preserve_selection else {}
         self._vars.clear()
+        self._labels.clear()
+        self._rows.clear()
         for w in self.checklist.winfo_children():
             w.destroy()
         self._empty_label = None
-        if not names:
+        self._no_match = None
+        if not triples:
             self._empty_label = ctk.CTkLabel(
-                self.checklist, text=f"No {self._label.lower()} loaded — sync your library first.",
+                self.checklist, text=overlay_empty_text(_singular(self._label)),
                 font=ctk.CTkFont(size=11), text_color=SECONDARY_GREY,
                 wraplength=190, justify="left",
             )
@@ -338,33 +428,144 @@ class FilterDropdown(ctk.CTkFrame):
             return
         self._select_all_btn.configure(state="normal")
         self._clear_btn.configure(state="normal")
-        for i, name in enumerate(names):
-            var = tk.BooleanVar(value=True)
-            self._vars[name] = var
-            ctk.CTkCheckBox(
-                self.checklist, text=name, variable=var,
+        groups = list(dict.fromkeys(g for _k, _l, g in triples if g is not None))
+        grouped = len(groups) >= 2
+        row_index = 0
+        current_group: object = object()
+        for key, label, group in triples:
+            if grouped and group != current_group:
+                current_group = group
+                header = ctk.CTkLabel(
+                    self.checklist, text=copy.group_header(group or ""), anchor="w",
+                    font=ctk.CTkFont(size=10, weight="bold"), text_color=SECONDARY_GREY,
+                )
+                header.grid(row=row_index, column=0, sticky="w", padx=5, pady=(6, 1))
+                self._rows.append(_Row(None, "", group, header))
+                row_index += 1
+            var = tk.BooleanVar(value=previous.get(key, True))
+            self._vars[key] = var
+            self._labels[key] = label
+            # Decided: cut from the start, keeping the leaf name (rows differ at the end).
+            shown = truncate_start(label, LABEL_TRUNCATE_AT)
+            box = ctk.CTkCheckBox(
+                self.checklist, text=shown, variable=var,
                 font=ctk.CTkFont(size=11),
                 height=22, checkbox_width=18, checkbox_height=18,
                 command=self._on_check_changed,
-            ).grid(row=i, column=0, sticky="w", padx=5, pady=1)
+            )
+            box.grid(row=row_index, column=0, sticky="w", padx=5, pady=1)
+            if shown != label:
+                Tooltip(box, label)  # full label only where it was cut
+            self._rows.append(_Row(key, label, group, box))
+            row_index += 1
+        self._no_match = ctk.CTkLabel(
+            self.checklist, text="", font=ctk.CTkFont(size=11), text_color=SECONDARY_GREY,
+            wraplength=190, justify="left",
+        )
+        self._no_match.grid(row=row_index, column=0, sticky="w", padx=5, pady=6)
+        self._no_match.grid_remove()
+        self._apply_search()
+        self._update_label()
+
+    # ── Type-to-filter (T3c.10) ──
+
+    @property
+    def search_text(self) -> str:
+        return self._search.get().strip() if self._search is not None else ""
+
+    def _clear_search(self) -> None:
+        if self._search is None or not self._search.get():
+            return
+        self._search.delete(0, "end")
+        self._flush_search()
+
+    def _flush_search(self) -> None:
+        """Apply any pending debounced search now, so actions see the rows shown."""
+        if self._search_after is not None:
+            self.after_cancel(self._search_after)
+            self._search_after = None
+        self._apply_search()
+
+    def _schedule_search(self) -> None:
+        if self._search_after is not None:
+            self.after_cancel(self._search_after)
+        self._search_after = self.after(SEARCH_DEBOUNCE_MS, self._apply_search)
+
+    def _visible_keys(self) -> list[str]:
+        text = self.search_text.casefold()
+        return [r.key for r in self._rows
+                if r.key is not None and (not text or text in r.label.casefold())]
+
+    def _apply_search(self) -> None:
+        """Hide and show rows (never rebuild), so ticks survive typing."""
+        self._search_after = None
+        text = self.search_text
+        visible = set(self._visible_keys())
+        groups_with_rows = {r.group for r in self._rows if r.key in visible}
+        for row in self._rows:
+            show = (row.key in visible) if row.key is not None else (row.group in groups_with_rows)
+            if show:
+                row.widget.grid()
+            else:
+                row.widget.grid_remove()
+        if self._no_match is not None:
+            if text and not visible:
+                self._no_match.configure(text=copy.no_match_text(_singular(self._label), text))
+                self._no_match.grid()
+            else:
+                self._no_match.grid_remove()
+        searching = bool(text)
+        self._select_all_btn.configure(
+            text=copy.BUTTON_SELECT_SHOWN if searching else copy.BUTTON_SELECT_ALL)
+        self._clear_btn.configure(text=copy.BUTTON_CLEAR_SHOWN if searching else copy.BUTTON_CLEAR)
+
+    def _fit_overlay(self) -> None:
+        """Clamp the overlay to the host's width and the window bottom (T3c.10)."""
+        if self._overlay_size == DEFAULT_OVERLAY_SIZE:
+            return
+        x, y = self._overlay._placement()  # noqa: SLF001 - same module
+        host_w, host_h = self._host.winfo_width(), self._host.winfo_height()
+        want_w, want_h = self._overlay_size
+        room_w = max(MIN_OVERLAY_WIDTH, host_w - x - _OVERLAY_EDGE)
+        width = want_w if host_w <= 1 else min(want_w, room_w)
+        height = want_h if host_h <= 1 else min(
+            want_h, max(MIN_LIST_HEIGHT, host_h - y - _OVERLAY_CHROME))
+        self.checklist.configure(width=width, height=height)
+
+    def set_label(self, label: str) -> None:
+        """Change the pill label (e.g. ``"Crates"`` → ``"Playlists"``) and its empty text."""
+        if label == self._label:
+            return
+        self._label = label
+        if self._empty_label is not None:
+            self._empty_label.configure(text=overlay_empty_text(_singular(label)))
+        if self._search is not None:
+            self._search.configure(placeholder_text=copy.find_placeholder(_singular(label)))
+        self._apply_search()
         self._update_label()
 
     def _toggle_overlay(self):
         if self._overlay.is_open:
             self._overlay.close()
         else:
+            self._fit_overlay()
             self._overlay.open()
+            if self._search is not None:
+                self.after(10, self._search.focus_set)  # type straight away
 
     def _select_all(self):
-        for v in self._vars.values():
-            v.set(True)
+        """Tick every item, or only the shown ones while a search is active."""
+        self._flush_search()
+        for key in self._visible_keys():
+            self._vars[key].set(True)
         self._update_label()
         self._fire()
 
     def _deselect_all(self):
-        """Clear every item — an intentional empty filter (mirrors _select_all)."""
-        for v in self._vars.values():
-            v.set(False)
+        """Clear every item (or the shown ones while searching): an intentional empty filter."""
+        self._flush_search()
+        for key in self._visible_keys():
+            self._vars[key].set(False)
         self._update_label()
         self._fire()
 
@@ -376,7 +577,7 @@ class FilterDropdown(ctk.CTkFrame):
         total = len(self._vars)
         selected = sum(1 for v in self._vars.values() if v.get())
         only = (
-            truncate(next(n for n, v in self._vars.items() if v.get()), 10)
+            truncate(self._labels[next(k for k, v in self._vars.items() if v.get())], 10)
             if selected == 1
             else None
         )
@@ -911,7 +1112,8 @@ class FilterBar(ctk.CTkFrame):
         self.grid_columnconfigure(4, weight=1)  # spacer column before reset
 
         self.crate_filter = FilterDropdown(
-            self, host, label="Crates", on_change=self._changed)
+            self, host, label="Crates", on_change=self._changed,
+            searchable=True, overlay_size=CRATE_OVERLAY_SIZE)
         self.crate_filter.grid(row=0, column=0, padx=(0, 6), pady=2)
 
         self.genre_filter = FilterDropdown(

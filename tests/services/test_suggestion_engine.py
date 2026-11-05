@@ -467,3 +467,30 @@ def test_get_suggestions_default_filters_object_is_no_filter(make_track, make_li
     with_filters = get_suggestions(current, library, filters=SuggestionFilters())
 
     assert _paths(with_filters) == _paths(baseline)
+
+
+
+def test_setlist_exclusion_uses_path_identity(make_track, make_library, monkeypatch):
+    """Serato-only setlist, then rekordbox on with a case-variant path: still excluded."""
+    import os
+
+    monkeypatch.setattr(os.path, "normcase", str.lower)  # Windows-like case folding
+    current = make_track(full_file_path="C:/Music/now.mp3")
+    played_from_serato = "C:/Music/Played.mp3"
+    same_file_from_rekordbox = make_track(full_file_path="c:/music/played.mp3")
+    other = make_track(full_file_path="C:/Music/other.mp3")
+    library = make_library([current, same_file_from_rekordbox, other])
+
+    scored = get_suggestions(current, library, exclude_paths={played_from_serato})
+
+    assert [s.track.full_file_path for s in scored] == ["C:/Music/other.mp3"]
+
+
+def test_self_excluded_by_path_identity(make_track, make_library, monkeypatch):
+    import os
+
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+    current = make_track(full_file_path="C:/Music/Now.mp3")
+    variant = make_track(full_file_path="c:/music/now.mp3")
+    library = make_library([variant])
+    assert get_suggestions(current, library) == []
