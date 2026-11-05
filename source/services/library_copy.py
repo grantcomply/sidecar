@@ -137,6 +137,23 @@ def crates_heading(noun: str) -> str:
     return noun_title(noun)
 
 
+def crate_tooltip_lines(
+    groups: Sequence[tuple[str | None, Sequence[str]]], noun: str,
+) -> list[str]:
+    """Suggestion-tooltip crate lines (brief §5.10, T5.4).
+
+    ``groups`` is ``(provider display name, labels)`` in registry order. A
+    ``None`` name (one provider enabled, or a crate of unknown provider) uses
+    the noun heading: ``Playlists: A, B``. Named groups give one line per
+    provider: ``rekordbox: Club / Peak, Warm up``. Groups without labels are
+    skipped. No provider colour, ever (colour is data).
+    """
+    return [
+        f"{name if name else crates_heading(noun)}: {', '.join(labels)}"
+        for name, labels in groups if labels
+    ]
+
+
 # ── Time ──
 
 

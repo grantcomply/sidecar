@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the Serato Sidecar test suite.
+"""Shared pytest fixtures for the Sidecar test suite.
 
 This is the project's first ``tests/`` directory — see
 ``plans/extended-camelot-matching-2026-05/`` and ``docs/testing-strategy.md``.
@@ -6,13 +6,20 @@ This is the project's first ``tests/`` directory — see
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
 
-import pytest
+# Before any project import: importing ``source.config`` resolves the real
+# data folder, and its one-off copy-forward from the old ``SeratoSidecar``
+# folder (T5.6) must never run against the real user's data during tests.
+os.environ["SIDECAR_SKIP_DATA_DIR_MIGRATION"] = "1"
 
-from source.models.library import TrackLibrary
-from source.models.path_identity import path_key
-from source.models.track import Track
+from collections.abc import Callable  # noqa: E402
+
+import pytest  # noqa: E402
+
+from source.models.library import TrackLibrary  # noqa: E402
+from source.models.path_identity import path_key  # noqa: E402
+from source.models.track import Track  # noqa: E402
 
 # Type alias for the make_track factory fixture.
 MakeTrack = Callable[..., Track]

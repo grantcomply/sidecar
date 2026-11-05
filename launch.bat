@@ -1,5 +1,5 @@
 @echo off
-title Serato Sidecar
+title Sidecar
 cd /d "%~dp0"
 python main.py
 if %errorlevel% neq 0 (

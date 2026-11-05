@@ -1,12 +1,12 @@
-# Serato Sidecar — release workflow.
+# Sidecar — release workflow.
 #
 # Phase 3 of plans/deployment-plan.md. Fires on any `v*` tag push (the normal
 # release trigger) OR on manual dispatch from the GitHub UI (useful for
 # debugging the workflow itself without publishing a real version).
 #
 # Pipeline:
-#   build-windows  -> PyInstaller -> Inno Setup -> SeratoSidecar-Setup-<ver>.exe
-#   build-macos    -> PyInstaller -> ditto zip  -> SeratoSidecar-<ver>-mac.zip
+#   build-windows  -> PyInstaller -> Inno Setup -> DJSidecar-Setup-<ver>.exe
+#   build-macos    -> PyInstaller -> ditto zip  -> DJSidecar-<ver>-mac.zip
 #   release        -> downloads both artifacts, generates latest.json, creates
 #                     the GitHub Release, and re-points the floating `latest`
 #                     tag at a stable pointer release for the Phase 4 updater.
@@ -105,7 +105,7 @@ jobs:
         # Imports pyrekordbox + sqlcipher3 in the frozen build; no database access.
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\SeratoSidecar\SeratoSidecar.exe" -ArgumentList "--self-check-rekordbox" -Wait -PassThru
+          $p = Start-Process -FilePath "dist\DJSidecar\DJSidecar.exe" -ArgumentList "--self-check-rekordbox" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "rekordbox self-check failed ($($p.ExitCode))"; exit 1 }
 
       - name: Compile Inno Setup installer
@@ -122,10 +122,10 @@ jobs:
       - name: Confirm installer was produced
         shell: bash
         # The .iss sets OutputDir=output (relative to the .iss file) and
-        # OutputBaseFilename=SeratoSidecar-Setup-{#MyAppVersion}, so the
-        # resulting file lives at build/output/SeratoSidecar-Setup-<ver>.exe.
+        # OutputBaseFilename=DJSidecar-Setup-{#MyAppVersion}, so the
+        # resulting file lives at build/output/DJSidecar-Setup-<ver>.exe.
         run: |
-          EXPECTED="build/output/SeratoSidecar-Setup-${{ steps.version.outputs.version }}.exe"
+          EXPECTED="build/output/DJSidecar-Setup-${{ steps.version.outputs.version }}.exe"
           if [[ ! -f "${EXPECTED}" ]]; then
             echo "::error::Expected installer not found at ${EXPECTED}"
             ls -la build/output/ || echo "(no build/output/ directory)"
@@ -137,7 +137,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: build/output/SeratoSidecar-Setup-*.exe
+          path: build/output/DJSidecar-Setup-*.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -210,36 +210,36 @@ jobs:
 
       - name: Build with PyInstaller
         # The spec's BUNDLE block (macOS only) wraps the one-folder output
-        # into dist/SeratoSidecar.app with the right Info.plist.
+        # into dist/DJSidecar.app with the right Info.plist.
         run: pyinstaller serato-sidecar.spec --noconfirm
 
       - name: Frozen rekordbox self-check
         timeout-minutes: 5
         # If this fails for lack of a macOS sqlcipher3 wheel, stop and report;
         # don't build SQLCipher from source (implementation plan T3.1).
-        run: dist/SeratoSidecar.app/Contents/MacOS/SeratoSidecar --self-check-rekordbox
+        run: dist/DJSidecar.app/Contents/MacOS/DJSidecar --self-check-rekordbox
 
       - name: Zip the .app bundle with ditto
         # CRITICAL: must use `ditto`, not plain `zip`. Plain zip mangles
         # bundle attributes (extended attributes, symlinks, etc.) and the
         # resulting .app fails to launch on the user's Mac. --keepParent
-        # preserves the SeratoSidecar.app directory wrapper inside the zip
+        # preserves the DJSidecar.app directory wrapper inside the zip
         # so the user gets a proper bundle when they unzip it.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          if [[ ! -d "dist/SeratoSidecar.app" ]]; then
-            echo "::error::dist/SeratoSidecar.app not found after PyInstaller run"
+          if [[ ! -d "dist/DJSidecar.app" ]]; then
+            echo "::error::dist/DJSidecar.app not found after PyInstaller run"
             ls -la dist/ || true
             exit 1
           fi
-          ditto -c -k --keepParent "dist/SeratoSidecar.app" "SeratoSidecar-${VERSION}-mac.zip"
-          ls -la "SeratoSidecar-${VERSION}-mac.zip"
+          ditto -c -k --keepParent "dist/DJSidecar.app" "DJSidecar-${VERSION}-mac.zip"
+          ls -la "DJSidecar-${VERSION}-mac.zip"
 
       - name: Upload macOS .app artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-app
-          path: SeratoSidecar-*-mac.zip
+          path: DJSidecar-*-mac.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -267,9 +267,9 @@ jobs:
         # (artifacts/windows-installer/..., artifacts/macos-app/...).
         # gh release create takes plain filenames, so we move them all up.
         run: |
-          mv ./artifacts/windows-installer/SeratoSidecar-Setup-*.exe ./
-          mv ./artifacts/macos-app/SeratoSidecar-*-mac.zip ./
-          ls -la SeratoSidecar-*
+          mv ./artifacts/windows-installer/DJSidecar-Setup-*.exe ./
+          mv ./artifacts/macos-app/DJSidecar-*-mac.zip ./
+          ls -la DJSidecar-*
 
       - name: Derive version from tag
         id: version
@@ -316,8 +316,8 @@ jobs:
               "released": os.environ["MANIFEST_RELEASED"],
               "notes":    os.environ["MANIFEST_NOTES"],
               "assets": {
-                  "windows": f"{base}/SeratoSidecar-Setup-{version}.exe",
-                  "macos":   f"{base}/SeratoSidecar-{version}-mac.zip",
+                  "windows": f"{base}/DJSidecar-Setup-{version}.exe",
+                  "macos":   f"{base}/DJSidecar-{version}-mac.zip",
               },
           }
           print(json.dumps(manifest, indent=2))
@@ -334,17 +334,17 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           if [[ -f release-notes.md ]]; then
             gh release create "v${VERSION}" \
-              --title "Serato Sidecar v${VERSION}" \
+              --title "Sidecar v${VERSION}" \
               --notes-file release-notes.md \
-              "SeratoSidecar-Setup-${VERSION}.exe" \
-              "SeratoSidecar-${VERSION}-mac.zip" \
+              "DJSidecar-Setup-${VERSION}.exe" \
+              "DJSidecar-${VERSION}-mac.zip" \
               latest.json
           else
             gh release create "v${VERSION}" \
-              --title "Serato Sidecar v${VERSION}" \
+              --title "Sidecar v${VERSION}" \
               --notes "Release v${VERSION}" \
-              "SeratoSidecar-Setup-${VERSION}.exe" \
-              "SeratoSidecar-${VERSION}-mac.zip" \
+              "DJSidecar-Setup-${VERSION}.exe" \
+              "DJSidecar-${VERSION}-mac.zip" \
               latest.json
           fi
 

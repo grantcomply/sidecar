@@ -243,3 +243,25 @@ def test_every_known_error_fits_the_partial_failure_toast(error, ok, failed):
     assert len(text) <= 75, (len(text), text)
     for fmt in (c.format_sync_failure, c.format_refresh_failure):
         assert len(fmt(failed, error)) <= 75
+
+
+# ── Crate attribution in the suggestion tooltip (T5.4) ──
+
+
+def test_crate_tooltip_lines_single_provider_uses_noun_heading():
+    assert c.crate_tooltip_lines([(None, ["A", "B"])], "playlist") == ["Playlists: A, B"]
+    assert c.crate_tooltip_lines([(None, ["House"])], "crate") == ["Crates: House"]
+
+
+def test_crate_tooltip_lines_one_line_per_provider_in_given_order():
+    groups = [("rekordbox", ["Club / Peak", "Warm up"]), ("Serato DJ", ["House - Bangers"])]
+    assert c.crate_tooltip_lines(groups, "playlist") == [
+        "rekordbox: Club / Peak, Warm up",
+        "Serato DJ: House - Bangers",
+    ]
+
+
+def test_crate_tooltip_lines_skips_empty_groups_and_unknown_provider_uses_noun():
+    groups = [("rekordbox", []), ("Serato DJ", ["X"]), (None, ["ghost"])]
+    assert c.crate_tooltip_lines(groups, "playlist") == ["Serato DJ: X", "Playlists: ghost"]
+    assert c.crate_tooltip_lines([], "crate") == []

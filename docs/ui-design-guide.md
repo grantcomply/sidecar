@@ -1,7 +1,7 @@
-# UI Design Guide — Serato Sidecar
+# UI Design Guide — Sidecar
 
 > **Status:** Starter draft — seeded from the current codebase, maintained by the `ui-designer` agent
-> **Last updated:** 2026-05-30
+> **Last updated:** 2026-11-05 (architect, at merge of the library-providers feature: settings dialog, playlist filter, Warning colour, noun rule. Design source: `plans/dj-library-providers-2026-11/ui-design-brief.md` and `ui-audit-phase-3c.md`)
 > **Authoritative for:** visual tokens, component patterns, window layout, microcopy, and UI state conventions
 
 This is the design counterpart to `docs/architecture-overview.md`. The architect owns
@@ -12,7 +12,7 @@ conflict, raise it — don't silently diverge.
 
 ## 1. Design context
 
-Serato Sidecar is a **desktop tool used live, mid-set, in a dark DJ booth**. That single
+Sidecar is a **desktop tool used live, mid-set, in a dark DJ booth**. That single
 fact drives every design call:
 
 - **Glanceability over density.** The DJ reads the screen in the half-second between
@@ -44,22 +44,27 @@ Colours are currently **hardcoded string literals** scattered across `config.py`
 `app.py`, and `ui/*.py` — there is no central token module (see §7.1). When citing or
 proposing a colour, name it from this table so a future extraction has a vocabulary.
 
-### Status colours (toasts, [app.py:137](../source/app.py#L137))
+### Status colours (toasts, settings dialog)
+Defined once in `source/config.py` (`SUCCESS_COLOR`, `WARNING_COLOR`, `ERROR_COLOR`, `INFO_COLOR`). Text always carries the meaning; colour supports it.
+
 | Token | Hex | Meaning |
 |-------|-----|---------|
-| Success | `#28a745` | Sync complete, library loaded |
-| Error | `#dc3545` | Sync failed, operation failed |
-| Info | `#4AB8D4` | Update available, neutral notice |
+| Success | `#28a745` | Sync complete, library loaded; the `Sync enabled sources` button fill |
+| Warning | `#ffc107` | Amber. Needs attention but nothing is broken: a partial sync failure, a background auto-update failure, snapshot warnings, a prompt on an empty field (`Database not found` when nothing is set up), the footer "Skipped …" line, "Turn on at least one source…". Shares its hex with the score "usable" bucket (`suggestion_panel.py`); accepted overlap |
+| Error | `#dc3545` | A real failure: a wrongly chosen file, every source failed (toast with an `Open settings` button), a card whose source can't be read |
+| Info | `#4AB8D4` | Update available, neutral notice, `Syncing…` in progress (cyan, so it isn't confused with amber) |
 
 ### Structural / text colours
 | Token | Hex | Use |
 |-------|-----|-----|
 | Sash | `#333333` | PanedWindow divider |
-| Card fill | `#2a2a2a` | Stat-badge background |
+| Card fill | `#2a2a2a` | Stat-badge and settings-card background |
 | Primary text | `#ffffff` | Values, titles |
-| Secondary text | `#999999` | Artist line |
-| Tertiary text | `#666666` | Badge labels, info line |
+| Secondary text | `#999999` | Artist line, hints, status chips, filter group headers, switched-off card names (`config.SECONDARY_TEXT_COLOR`) |
+| Tertiary text | `#666666` | Badge labels, info line. **Not** for text on the card fill (about 2.4:1) |
 | Placeholder | `#555555` | Empty badge value (`—`) |
+
+**No provider colours.** rekordbox and Serato are never colour-coded; colour is data (§1). Sources are distinguished by name only.
 
 ### Domain colours (these *are* the data — do not restyle casually)
 - **Camelot keys** — `CAMELOT_COLORS`, 24 entries forming a hue wheel
@@ -92,11 +97,12 @@ Cite these file:line anchors when claiming "we already do X."
 | **Stat badge** | [track_detail.py:103](../source/ui/track_detail.py#L103) `_make_badge` | Rounded card (corner_radius 10), `#2a2a2a` fill, tiny uppercase label over a large value. |
 | **Search + dropdown** | [track_detail.py:24-64](../source/ui/track_detail.py#L24-L64) | Entry with placeholder, 150ms debounce, scrollable results with a column header; rows hover-highlight. |
 | **Toast notification** | [app.py:137](../source/app.py#L137) `_show_toast` | Transient top-bar message, colour-coded by outcome, auto-dismiss (default 4000ms), optional inline action button. |
-| **Modal dialog** | `source/ui/sync_panel.py` `SettingsDialog` | Folder picker + sync trigger + status line. The pattern for any settings/secondary window. |
+| **Settings dialog** | `source/ui/sync_panel.py` `SettingsDialog` | Modal `CTkToplevel`, title `Settings — Sidecar v{version}`, **640x580 default, 540x420 minimum, resizable**. Heading "Music sources" (15 bold) + one grey subline. Body is a `CTkScrollableFrame` of **one card per provider** in registry order (rekordbox, Serato DJ): an on/off `CTkSwitch`, the name (13 bold; dimmed grey when off), a right-aligned status chip (`Updates automatically · N tracks · M playlists` / `Last updated …`, or `Synced … · …`, `Not synced yet`, `Syncing…`, `Off. Saved library kept.`), then rows generated from the provider's `SettingSpec`s: label + entry + `Browse` for files and folders, `On`/`Off` tiles for a two-choice setting, a grey hint line, and the issue line **under its field** (12 pt, bold red for errors, amber for prompts). A switched-off card collapses to its header plus one grey line. Footer pinned below the scroll area: a status line, an "Unsaved changes" tag, and **Close/Cancel · Save · Sync enabled sources**. Edits are **staged**: Save applies them in one write and reloads from stored snapshots without scanning; Cancel, Esc and the window close drop them with no prompt; Sync saves, then scans every enabled source without an error (others are skipped, named in an amber footer line). Disabled primary buttons use low-chroma fills. The dialog never branches on provider id; per-provider text comes from the provider. The pattern for any settings/secondary window. |
 | **Resizable split** | [app.py:88](../source/app.py#L88) `tk.PanedWindow` | Horizontal, flat sash, 50/50 initial. |
 | **Hover tooltip** | `source/ui/tooltip.py` | Reusable hover tooltip. |
 | **Text truncation** | [utils.py:1](../source/ui/utils.py#L1) `truncate` | Ellipsis at max length — the canonical way to fit text in fixed columns. |
-| **Filter pill** | [filter_bar.py](../source/ui/filter_bar.py) `FilterDropdown` | Rounded pill button (corner_radius=16, height=32). Grey background = no filter active; accent blue (`#1f6aa5`) = filter is narrowing results. Label shows compact state ("Crates", "Crates: 3/9", "Crates: House", "Crates: none"). The overlay offers **"Select all"** and **"Clear"** side by side. (Reverses the earlier Finding 2 "no Deselect All" decision: Clear is now supported, paired with an intentional empty-state message in the suggestion panel — *"No crates selected — pick at least one crate to see suggestions."* — so a fully-cleared filter reads as deliberate, not a bug.) |
+| **Filter pill** | [filter_bar.py](../source/ui/filter_bar.py) `FilterDropdown` | Rounded pill button (corner_radius=16, height=32). Grey background = no filter active; accent blue (`#1f6aa5`) = filter is narrowing results. Label shows compact state ("Playlists", "Playlists: 3/9", "Playlists: Peak", "Playlists: none"; "Crates" when only Serato is on — see the noun rule in §8). The overlay offers **"Select all"** and **"Clear"** side by side. (Reverses the earlier Finding 2 "no Deselect All" decision: Clear is now supported, paired with an intentional empty-state message in the suggestion panel — *"No playlists selected — pick at least one playlist to see suggestions."* — so a fully-cleared filter reads as deliberate, not a bug.) |
+| **Grouped, searchable checklist** | [filter_bar.py](../source/ui/filter_bar.py) `FilterDropdown(searchable=True, overlay_size=(300, 320))` | The crate/playlist filter only. With crates from **two or more** providers, a non-clickable header row precedes each group (provider display name in uppercase, `REKORDBOX` / `SERATO DJ`, 10 bold, secondary `#999999`), in registry order; with one provider the list is flat. A provider with no crates gets no header. Inside a group, items sort case-insensitively by folder path. Long labels are truncated **from the start** at a ` / ` or ` - ` separator (`utils.truncate_start`), with the full path in a tooltip. A search box (`Find a playlist`, 150 ms debounce) filters rows; headers hide when their group has no visible rows; while searching, the buttons read **"Select shown" / "Clear shown"** and act on visible rows only. The search clears when the overlay closes. Selections hold crate **ids**, so they survive a live refresh (`preserve_selection`). |
 | **Floating overlay panel** | [filter_bar.py](../source/ui/filter_bar.py) `FloatingOverlay` | A `CTkFrame` shown via `place()` + `lift()` over a host widget, positioned below the triggering pill. Closes on outside click or Escape. Only one overlay open at a time (class-level `_open` registry). Not a `CTkToplevel` — no separate window lifecycle. |
 | **Inline stepper** | [filter_bar.py](../source/ui/filter_bar.py) `KeyOffsetControl` | Three-part pill: `[◀  label  ▶]`. `CTkButton` arrows (transparent, width=24) flanking a `CTkLabel`. Used for bounded integer controls (like key offset). Buttons disable at range limits. |
 | **Preset tile row** | [filter_bar.py](../source/ui/filter_bar.py) `DateRangeControl` | Horizontal row of `CTkButton` tiles representing mutually exclusive preset options. Active tile: accent blue. Default tile: grey. Selecting a tile fires change and closes the overlay. |
@@ -105,13 +111,23 @@ Cite these file:line anchors when claiming "we already do X."
 
 Every panel and feature must define all four. Current handling:
 
-- **Loading** — sync runs on a daemon thread; `SettingsDialog` shows a syncing state
-  via `set_syncing()`. There is no global loading indicator elsewhere.
+- **Loading** — sync runs on a daemon thread; the settings cards show `Syncing…` (cyan) only
+  for syncs the DJ asked for. There is no global loading indicator elsewhere. Before the
+  automatic first rekordbox import of a fresh install, the dashboard reads *"Reading your library…"*.
 - **Empty** — dashboard shows the placeholder *"Search for a track to begin"* and badges
-  show `—`; the suggestion panel is cleared when no track is selected.
-- **Error** — surfaced as a red toast (*"Sync failed: …"*). Note: `crate_parser`
-  swallows ID3 read errors silently — a known debt, not a pattern to copy.
-- **Success** — green toast with a count (*"Synced N tracks from M crates"*).
+  show `—`; the suggestion panel is cleared when no track is selected. With an empty
+  library the placeholder says what to do: *"Turn on a music source in Settings (⚙) to begin"*
+  or *"Sync your library in Settings (⚙) to begin"* (`library_copy.empty_library_state`).
+- **Error** — a red toast for a manual sync that failed for every source (with an `Open settings`
+  button); amber for a partial failure (*"Synced rekordbox. Serato DJ sync failed: …"*) and for a
+  background auto-update failure (*"rekordbox auto-update failed: …"*, once per distinct error).
+  The card shows the error plus *"Using your library from {date}."* — the last good library
+  stays loaded.
+- **Success** — green toast with a count (*"Synced N tracks from M playlists"*, or naming the sources
+  when there are two). **Live refresh is quiet:** no toast, no focus steal, audio and filters
+  untouched, and the suggestion list defers its re-render while the pointer is over it or a
+  preview plays. The one exception is *"Imported N tracks from rekordbox"* when a quiet refresh
+  fills an empty library.
 
 ## 7. Known design debt
 
@@ -133,9 +149,21 @@ Don't re-flag these in audits unless asked to triage them.
   UPPERCASE only for tiny badge labels (*"KEY"*, *"BPM"*, *"ENERGY"*, *"GENRE"*).
 - **Toasts state the outcome plainly**, with a count where it helps
   (*"Synced 412 tracks from 9 crates"*).
-- **Errors name what failed and stay short** (*"Sync failed: &lt;reason&gt;"*).
+- **Errors name what failed and stay short** (*"Serato DJ sync failed: Crates folder not found"*).
+  Provider messages have an initial capital, no trailing period, no provider name and no path;
+  the UI adds the name. Toasts stay within 75 characters.
 - **Placeholders tell the user what to do**, not what is missing
   (*"Search for a track to begin"*, not *"No track selected"*).
+- **Product and provider names:** the app is **"Sidecar"** (window title *"Sidecar — DJ Track
+  Selector"*). Providers are written as their vendors style them: **"rekordbox"** (lowercase, even at
+  the start of a sentence) and **"Serato DJ"**.
+- **Crates vs Playlists (noun rule):** the word follows the enabled sources' `crate_noun`
+  (`library_copy.crate_noun_for`). Only Serato on (or nothing on) → "crate"/"Crates"; any
+  rekordbox → "playlist"/"Playlists". It applies everywhere the word appears: filter pill, overlay
+  empty text, search placeholder, cleared-filter message, tooltip heading, status chips and toasts.
+- **All user-visible strings for sources, sync and settings live in `source/services/library_copy.py`**
+  (pure, unit-tested). Don't inline new ones in widgets.
+- **Thousands separators** in counts (*"1,248 tracks"*).
 
 ## 9. Open questions
 

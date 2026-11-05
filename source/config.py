@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import tempfile
 import time
 from collections.abc import Iterable, Mapping, Sequence
@@ -14,27 +15,152 @@ from source.services.harmonic_tier import HarmonicTier
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SOURCE_DIR)
 
-_APP_NAME = "SeratoSidecar"
+_APP_NAME = "DJSidecar"
+# Data-dir names of earlier releases, newest first (T5.6). Their contents are
+# copied forward once; the old folders are never modified or deleted.
+_LEGACY_APP_NAMES = ("SeratoSidecar",)
+_SETTINGS_FILENAME = "settings.env"
+_SETTINGS_BACKUP_FILENAME = "settings.env.pre-schema2.bak"  # settings_migration's backup
+_LIBRARY_DIRNAME = "library"  # library_store's snapshot folder
+_LEGACY_CACHE_FILENAME = "track_cache.json"  # library_store's v3 cache
+_COPY_PENDING_MARKER = ".copy-forward-pending"  # present while a copy is unfinished
+# Set (to anything non-empty) to skip the copy-forward. The test suite sets it
+# before importing this module, so tests can never copy the real user's data.
+SKIP_DATA_DIR_MIGRATION_ENV = "SIDECAR_SKIP_DATA_DIR_MIGRATION"
 
 _logger = logging.getLogger(__name__)
+_data_dir_migration_done = False  # once per process
+
+
+REPLACE_ATTEMPTS = 5
+REPLACE_BACKOFF_SECONDS = 0.05
+
+
+def replace_with_retry(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+    """``os.replace`` that retries Windows sharing violations (PermissionError).
+
+    Antivirus scanners, backup tools or a reader holding the target open can
+    briefly block a replace on Windows. Retries a few times with a short,
+    growing backoff, then re-raises.
+    """
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(REPLACE_BACKOFF_SECONDS * attempt)
+
+
+def _platform_data_dir(app_name: str) -> Path:
+    # appauthor=False suppresses the extra vendor-name folder level on Windows.
+    # roaming=True selects %APPDATA% (Roaming) over %LOCALAPPDATA% on Windows;
+    # no-op on macOS / Linux.
+    return Path(_platform_user_data_dir(app_name, appauthor=False, roaming=True))
 
 
 def user_data_dir() -> Path:
     """Return the platform-appropriate user data directory for this app.
 
-    Creates the directory on first access. Paths:
-        Windows: %APPDATA%\\SeratoSidecar
-        macOS:   ~/Library/Application Support/SeratoSidecar
-        Linux:   ~/.config/serato-sidecar  (XDG fallback)
+    Creates the directory on first access and, once per process, copies an
+    older release's data forward (see ``_migrate_legacy_data_dir``). Paths:
+        Windows: %APPDATA%\\DJSidecar
+        macOS:   ~/Library/Application Support/DJSidecar
+        Linux:   ~/.local/share/DJSidecar  ($XDG_DATA_HOME)
     """
-    # appauthor=False suppresses the extra vendor-name folder level on Windows.
-    # roaming=True selects %APPDATA% (Roaming) over %LOCALAPPDATA% on Windows;
-    # no-op on macOS / Linux.
-    path = Path(_platform_user_data_dir(_APP_NAME, appauthor=False, roaming=True))
+    return _resolve_user_data_dir()
+
+
+def _resolve_user_data_dir() -> Path:
+    """``user_data_dir``'s body (tests call this; the suite patches ``user_data_dir``)."""
+    global _data_dir_migration_done
+    path = _platform_data_dir(_APP_NAME)
     path.mkdir(parents=True, exist_ok=True)
+    if not _data_dir_migration_done:
+        _data_dir_migration_done = True
+        if not os.environ.get(SKIP_DATA_DIR_MIGRATION_ENV):
+            _migrate_legacy_data_dir(path)
     return path
 
 
+def _migrate_legacy_data_dir(new: Path) -> None:
+    """Copy settings and library data forward from an older data folder (T5.6).
+
+    Runs when ``new`` has no ``settings.env`` yet, or when an earlier copy
+    did not finish (the ``.copy-forward-pending`` marker is still there), and
+    a legacy folder holds data: ``settings.env``, ``track_cache.json`` or
+    ``library/`` (v0.1.6 only wrote ``settings.env`` once a setting was saved,
+    so many installs have just the cache). Copies, never moves: an older
+    install still finds its data. Never copies ``diagnostics/``.
+
+    The marker is written before the first copy and removed only after the
+    last step succeeds, so a failed copy is retried on the next start even if
+    startup has since written a fresh ``settings.env`` (the retry replaces it
+    with the legacy one). Errors are logged as a warning and never stop startup.
+    """
+    marker = new / _COPY_PENDING_MARKER
+    if (new / _SETTINGS_FILENAME).exists() and not marker.exists():
+        return
+    legacy = next((d for d in map(_platform_data_dir, _LEGACY_APP_NAMES)
+                   if d != new and _has_legacy_data(d)), None)
+    if legacy is None:
+        _remove_quietly(marker)  # nothing left to copy from: stop retrying
+        return
+    staged = new / (_SETTINGS_FILENAME + ".migrating")
+    try:
+        marker.touch()
+        _copy_legacy_data(legacy, new, staged)
+        marker.unlink()
+    except OSError as e:
+        _remove_quietly(staged)
+        _logger.warning(
+            "Could not copy data from the %s folder (%s); will retry on next start",
+            legacy.name, type(e).__name__,
+        )
+    else:
+        _logger.info("Copied settings and library data from the %s folder", legacy.name)
+
+
+def copy_forward_pending() -> bool:
+    """True while a copy from an older data folder has not finished (it retries next start).
+
+    The older folder holds data, so this is an existing install: the settings
+    migration treats it like one (Serato only, not fresh-install detection).
+    """
+    return (user_data_dir() / _COPY_PENDING_MARKER).exists()
+
+
+def _has_legacy_data(folder: Path) -> bool:
+    return (
+        (folder / _SETTINGS_FILENAME).is_file()
+        or (folder / _LEGACY_CACHE_FILENAME).is_file()
+        or (folder / _LIBRARY_DIRNAME).is_dir()
+    )
+
+
+def _copy_legacy_data(legacy: Path, new: Path, staged: Path) -> None:
+    """Copy library data, then the backup, then ``settings.env`` (via ``staged``)."""
+    library = legacy / _LIBRARY_DIRNAME
+    if library.is_dir():
+        shutil.copytree(library, new / _LIBRARY_DIRNAME, dirs_exist_ok=True)
+    elif (legacy / _LEGACY_CACHE_FILENAME).is_file():
+        shutil.copy2(legacy / _LEGACY_CACHE_FILENAME, new / _LEGACY_CACHE_FILENAME)
+    if (legacy / _SETTINGS_BACKUP_FILENAME).is_file():
+        shutil.copy2(legacy / _SETTINGS_BACKUP_FILENAME, new / _SETTINGS_BACKUP_FILENAME)
+    if (legacy / _SETTINGS_FILENAME).is_file():
+        shutil.copy2(legacy / _SETTINGS_FILENAME, staged)
+        replace_with_retry(staged, new / _SETTINGS_FILENAME)
+
+
+def _remove_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:
+        _logger.debug("Could not remove %s (%s)", path.name, type(e).__name__)
+
+
+# Computed after the copy-forward above, which runs inside user_data_dir().
 ENV_FILE = user_data_dir() / "settings.env"
 
 
@@ -70,27 +196,6 @@ def _load_env() -> dict[str, str]:
     return env
 
 
-REPLACE_ATTEMPTS = 5
-REPLACE_BACKOFF_SECONDS = 0.05
-
-
-def replace_with_retry(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
-    """``os.replace`` that retries Windows sharing violations (PermissionError).
-
-    Antivirus scanners, backup tools or a reader holding the target open can
-    briefly block a replace on Windows. Retries a few times with a short,
-    growing backoff, then re-raises.
-    """
-    for attempt in range(1, REPLACE_ATTEMPTS + 1):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == REPLACE_ATTEMPTS:
-                raise
-            time.sleep(REPLACE_BACKOFF_SECONDS * attempt)
-
-
 def _write_env_atomic(env_file: Path, env: Mapping[str, str]) -> None:
     """Write ``env`` to ``env_file`` via a unique temp file + ``os.replace``.
 
@@ -115,6 +220,21 @@ def _write_env_atomic(env_file: Path, env: Mapping[str, str]) -> None:
 def _save_env(env: Mapping[str, str]):
     """Write a dict back to the settings env file (atomically)."""
     _write_env_atomic(ENV_FILE, env)
+
+
+def _save_user_env(env: Mapping[str, str]) -> None:
+    """``_save_env`` for a user's own choices: they win over a pending copy-forward.
+
+    Clears the ``.copy-forward-pending`` marker after the write, so a retry of
+    an earlier failed copy never overwrites what the user saved since. The
+    startup migration writes with ``_save_env`` and leaves the marker alone.
+    """
+    _save_env(env)
+    marker = user_data_dir() / _COPY_PENDING_MARKER
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError as e:
+        _logger.debug("Could not clear the copy-forward marker (%s)", type(e).__name__)
 
 
 # ── Library provider settings (ADR-015 D7) ──
@@ -152,7 +272,7 @@ def save_enabled_providers(ids: Sequence[str]) -> None:
     env = _load_env()
     env[PROVIDERS_ENABLED_KEY] = ",".join(ids)
     env[SETTINGS_SCHEMA_KEY] = str(CURRENT_SETTINGS_SCHEMA)
-    _save_env(env)
+    _save_user_env(env)
 
 
 def get_provider_settings(
@@ -187,7 +307,7 @@ def save_library_settings(
         for spec in specs:
             if spec.key in values:
                 env[spec.env_key] = _clean_value(values[spec.key])
-    _save_env(env)
+    _save_user_env(env)
 
 
 def save_provider_settings(specs: Iterable[_SpecLike], values: Mapping[str, str]) -> None:
@@ -196,7 +316,7 @@ def save_provider_settings(specs: Iterable[_SpecLike], values: Mapping[str, str]
     for spec in specs:
         if spec.key in values:
             env[spec.env_key] = _clean_value(values[spec.key])
-    _save_env(env)
+    _save_user_env(env)
 
 SUGGESTION_WEIGHTS = {
     "key": 0.45,

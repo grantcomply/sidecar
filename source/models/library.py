@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from source.models.track import Track
@@ -58,10 +58,41 @@ class TrackLibrary:
         path = info.path if info is not None else (label,)
         return (tuple(part.casefold() for part in path), label.casefold(), cid)
 
+    def crate_leaf(self, crate_id: str) -> str:
+        """The crate's own name (``path[-1]``), without its folders (T5.3).
+
+        Falls back to the label (then the raw id) when the path is unknown.
+        """
+        info = self._crates.get(crate_id)
+        if info is None:
+            return crate_id
+        return info.path[-1] if info.path else info.label
+
     def crate_provider(self, crate_id: str) -> str | None:
         """Provider id that owns a crate (``None`` for an unknown id)."""
         info = self._crates.get(crate_id)
         return info.provider_id if info is not None else None
+
+    def crates_by_provider(
+        self, crate_ids: Iterable[str], provider_order: Sequence[str],
+    ) -> list[tuple[str | None, list[str]]]:
+        """Crate labels grouped by owning provider id (T5.4 tooltip lines).
+
+        Groups follow ``provider_order``; providers not in it come next and
+        crates of unknown provider (``None``) last. Labels keep input order.
+        Providers holding none of the crates get no group.
+        """
+        groups: dict[str | None, list[str]] = {}
+        for crate_id in crate_ids:
+            groups.setdefault(self.crate_provider(crate_id), []).append(self.crate_label(crate_id))
+        rank = {pid: i for i, pid in enumerate(provider_order)}
+
+        def order(pid: str | None) -> tuple[int, int]:
+            if pid is None:
+                return (2, 0)
+            return (0, rank[pid]) if pid in rank else (1, 0)
+
+        return [(pid, groups[pid]) for pid in sorted(groups, key=order)]
 
     @property
     def crate_count(self) -> int:

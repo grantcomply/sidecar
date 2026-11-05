@@ -1,10 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for Serato Sidecar.
+PyInstaller spec for Sidecar (DJ track selector).
 
 One-folder build (not one-file). Platform-detecting: the same spec is used
 on Windows and macOS. On macOS an additional BUNDLE step produces
-`SeratoSidecar.app`.
+`DJSidecar.app`. (The spec file keeps its old name; release.yml refers to it.)
 
 Build with:
     pyinstaller serato-sidecar.spec
@@ -26,7 +26,7 @@ _version_path = Path(SPECPATH) / "source" / "__version__.py"
 exec(_version_path.read_text(encoding="utf-8"), _version_ns)
 APP_VERSION: str = _version_ns["__version__"]
 
-APP_NAME = "SeratoSidecar"
+APP_NAME = "DJSidecar"
 IS_WINDOWS = sys.platform.startswith("win")
 IS_MACOS = sys.platform == "darwin"
 

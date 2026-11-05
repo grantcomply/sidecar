@@ -32,7 +32,6 @@ import customtkinter as ctk
 
 from source.services import library_copy as copy
 from source.services.library_copy import overlay_empty_text
-from source.ui.tooltip import Tooltip
 
 from source.config import KEY_OFFSET_RANGE
 from source.services.dates import date_range_to_epoch
@@ -281,6 +280,19 @@ _OVERLAY_EDGE = 8
 _OVERLAY_CHROME = 110  # search box + buttons + paddings above the list
 
 
+FilterItem = str | tuple[str | None, ...]  # see FilterDropdown.set_items
+
+
+def _normalise_item(item: FilterItem) -> tuple[str, str, str | None, str]:
+    """``(key, label, group, short)`` from any ``FilterDropdown.set_items`` item form."""
+    if isinstance(item, str):
+        return (item, item, None, item)
+    key, label = str(item[0]), str(item[1])
+    group = item[2] if len(item) > 2 else None
+    short = item[3] if len(item) > 3 and item[3] else label
+    return (key, label, group, short)
+
+
 class _Row:
     """One checklist row (or group header), built once and hidden/shown by search."""
 
@@ -323,7 +335,8 @@ class FilterDropdown(ctk.CTkFrame):
         self._host = host
         self._vars: dict[str, tk.BooleanVar] = {}  # keyed by item key (e.g. crate id)
         self._labels: dict[str, str] = {}  # item key -> display label
-        self._items: list[tuple[str, str, str | None]] = []  # current (key, label, group)
+        self._short: dict[str, str] = {}  # item key -> single-selection pill name (leaf)
+        self._items: list[tuple[str, str, str | None, str]] = []  # (key, label, group, short)
         self._is_staged = False  # staged-tint flag (T3.9)
 
         self.pill = ctk.CTkButton(
@@ -381,39 +394,37 @@ class FilterDropdown(ctk.CTkFrame):
 
     def set_items(
         self,
-        items: Sequence[str | tuple[str, ...]],
+        items: Sequence[FilterItem],
         *,
         preserve_selection: bool = False,
     ):
         """Rebuild the checklist.
 
-        Each item is a plain string (key and label), a ``(key, label)`` pair or a
-        ``(key, label, group)`` triple. With two or more groups, a non-interactive
-        header precedes each group (in the order given); one group renders flat.
-        ``selected`` / ``restore`` work on keys; checkboxes show labels.
+        Each item is a plain string (key and label), a ``(key, label)`` pair, a
+        ``(key, label, group)`` triple or a ``(key, label, group, short)``
+        quadruple. With two or more groups, a non-interactive header precedes
+        each group (in the order given); one group renders flat. ``selected`` /
+        ``restore`` work on keys; checkboxes show labels; a single-selection pill
+        shows ``short`` (e.g. a playlist's leaf name, T5.3), else the label.
 
         By default every item starts checked. With ``preserve_selection`` (live
         refresh), existing keys keep their checked state, new keys start
         checked and removed keys are dropped; ``on_change`` is not fired.
         """
-        triples: list[tuple[str, str, str | None]] = []
-        for item in items:
-            if isinstance(item, str):
-                triples.append((item, item, None))
-            else:
-                triples.append((item[0], item[1], item[2] if len(item) > 2 else None))
-        if preserve_selection and triples == self._items:
+        rows = [_normalise_item(item) for item in items]
+        if preserve_selection and rows == self._items:
             return  # live refresh with nothing new: no rebuild, no flicker in an open list
-        self._items = list(triples)
+        self._items = rows
         previous = {key: var.get() for key, var in self._vars.items()} if preserve_selection else {}
         self._vars.clear()
         self._labels.clear()
+        self._short.clear()
         self._rows.clear()
         for w in self.checklist.winfo_children():
             w.destroy()
         self._empty_label = None
         self._no_match = None
-        if not triples:
+        if not rows:
             self._empty_label = ctk.CTkLabel(
                 self.checklist, text=overlay_empty_text(_singular(self._label)),
                 font=ctk.CTkFont(size=11), text_color=SECONDARY_GREY,
@@ -428,12 +439,14 @@ class FilterDropdown(ctk.CTkFrame):
             return
         self._select_all_btn.configure(state="normal")
         self._clear_btn.configure(state="normal")
-        groups = list(dict.fromkeys(g for _k, _l, g in triples if g is not None))
+        groups = list(dict.fromkeys(g for _k, _l, g, _s in rows if g is not None))
         grouped = len(groups) >= 2
+        if grouped:  # ungrouped rows (unknown provider) go above the first header
+            rows = sorted(rows, key=lambda row: row[2] is not None)  # stable
         row_index = 0
         current_group: object = object()
-        for key, label, group in triples:
-            if grouped and group != current_group:
+        for key, label, group, short in rows:
+            if grouped and group != current_group and group is not None:
                 current_group = group
                 header = ctk.CTkLabel(
                     self.checklist, text=copy.group_header(group or ""), anchor="w",
@@ -445,6 +458,7 @@ class FilterDropdown(ctk.CTkFrame):
             var = tk.BooleanVar(value=previous.get(key, True))
             self._vars[key] = var
             self._labels[key] = label
+            self._short[key] = short
             # Decided: cut from the start, keeping the leaf name (rows differ at the end).
             shown = truncate_start(label, LABEL_TRUNCATE_AT)
             box = ctk.CTkCheckBox(
@@ -577,7 +591,7 @@ class FilterDropdown(ctk.CTkFrame):
         total = len(self._vars)
         selected = sum(1 for v in self._vars.values() if v.get())
         only = (
-            truncate(self._labels[next(k for k, v in self._vars.items() if v.get())], 10)
+            truncate(self._short[next(k for k, v in self._vars.items() if v.get())], 10)
             if selected == 1
             else None
         )

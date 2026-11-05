@@ -1,19 +1,20 @@
-# Serato Sidecar — DJ Track Selector
+# Sidecar — DJ Track Selector
 
 ## Project Overview
-Desktop application that helps DJs pick the next track during a set. Reads Serato DJ crate files, parses track metadata (ID3 tags), and scores track compatibility based on harmonic keys (Camelot wheel), energy flow, BPM proximity, and category affinity.
+Desktop application that helps DJs pick the next track during a set. Reads the DJ's library through pluggable **library providers** — rekordbox (its library database, read from a private copy) and Serato DJ (crate files + ID3 tags) — either or both enabled in Settings. Scores track compatibility based on harmonic keys (Camelot wheel), energy flow, BPM proximity, and category affinity. The exe is `DJSidecar.exe` and the data dir is `DJSidecar` (copied forward from the legacy `SeratoSidecar` dir).
 
 ## Tech Stack
 - **Language:** Python 3.10+
 - **UI:** CustomTkinter (dark theme, blue accents)
 - **Audio metadata:** Mutagen (ID3 tag reading)
+- **rekordbox:** pyrekordbox + sqlcipher3-wheels (only `providers/rekordbox/db_reader.py` imports them; never log the DB key, never open rekordbox's own files)
 - **Data storage:** Per-provider JSON snapshots (`library/<provider>.json`) merged into an in-memory TrackLibrary
 - **Config:** `.env` file for user settings, `config.py` for app constants
 
 ## Project Structure
 ```
-serato-sidecar/
-├── main.py                  # Entry point
+sidecar/
+├── main.py                  # Entry point (+ --self-check-rekordbox / --check-rekordbox-library)
 ├── app.py                   # Main window, event wiring, layout
 ├── config.py                # Settings, weights, affinity matrix, colors
 ├── models/
@@ -64,6 +65,8 @@ serato-sidecar/
 - **Energy Levels:** 1-8 scale tracking track intensity
 - **Categories:** Banger, Driver, Groover, Filler, Chiller, Opener
 - **Track Comments Format:** `"4A - 7 - Banger - Fat Bass Vocal"` (key - energy - category - descriptors)
+- **Crate:** a Serato crate or a rekordbox playlist. Crate ids are provider-namespaced (`serato:…`, `rekordbox:…`); the UI says "Crates" when only Serato is enabled, otherwise "Playlists"
+- **Merge:** tracks are identified by file path; when both providers have a file, rekordbox's non-empty values win (rekordbox's own analysis is the source of truth)
 
 ## Agent Workflow
 This project uses four specialized agents that collaborate:
@@ -84,5 +87,6 @@ python main.py
 
 ## Cross-Platform Notes
 - Serato crate paths differ: Windows uses `C:\Users\...\Music\_Serato_\Subcrates`, macOS uses `~/Music/_Serato_/Subcrates`
-- File paths in CSVs use OS-native separators
-- The app currently has Windows-specific fallback paths in config.py
+- rekordbox DB: Windows `%APPDATA%\Pioneer\rekordbox\master.db`, macOS `~/Library/Pioneer/rekordbox/master.db`; track paths come from `OrgFolderPath` (`/` separators, converted to native)
+- Path identity normalises NFC + `os.path.normcase` (`models/path_identity.py`)
+- See `docs/cross-platform-guide.md` for the sqlcipher wheel matrix and the rekordbox upgrade runbook in `docs/deployment-guide.md`

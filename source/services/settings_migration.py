@@ -95,9 +95,11 @@ def _detected_provider_ids() -> list[str]:
 
 
 def _migrated(env: Mapping[str, str]) -> dict[str, str]:
+    # An unfinished copy from the old data folder (T5.6) means an existing
+    # install whose cache hasn't arrived yet: treat it like a legacy cache.
     return migrate_settings(
         env,
-        has_legacy_cache=library_store.legacy_cache_exists(),
+        has_legacy_cache=library_store.legacy_cache_exists() or config.copy_forward_pending(),
         detected=_detected_provider_ids(),
     )
 

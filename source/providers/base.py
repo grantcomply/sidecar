@@ -24,8 +24,8 @@ from typing import Literal, Protocol, TypedDict, runtime_checkable
 class ProviderError(Exception):
     """Configuration-level failure with a user-presentable message.
 
-    Examples: folder missing, DB unreadable, DB key unavailable. Raised by
-    ``LibraryProvider.scan()``.
+    Examples: folder missing, database not found or unreadable, database busy.
+    Raised by ``LibraryProvider.scan()``.
     """
 
 
@@ -37,7 +37,7 @@ class SettingKind(str, Enum):
     DIRECTORY = "directory"
     FILE = "file"
     CHOICE = "choice"
-    TEXT = "text"  # free text, e.g. the rekordbox DB key
+    TEXT = "text"  # free text (no provider uses it yet; never a secret such as a DB key)
 
 
 @dataclass(frozen=True)

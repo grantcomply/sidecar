@@ -22,6 +22,7 @@ dist/
 # to track serato-sidecar.spec itself (it is source), plus build/installer.iss
 # and build/generate_icons.py. Only the PyInstaller work dir is ignored.
 /build/SeratoSidecar/
+/build/DJSidecar/
 *.pyz
 
 

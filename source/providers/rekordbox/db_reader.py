@@ -5,7 +5,8 @@ pattern), so the app starts and Serato works even if they fail to load.
 
 Key and log safety: Sidecar never passes, stores or logs a database key
 (pyrekordbox's built-in key is used). pyrekordbox logs the key at DEBUG, so its
-loggers are pinned at WARNING right after import. Every exception from
+loggers are pinned at ERROR right after import (``log_safety``; SQLAlchemy's at
+WARNING). Every exception from
 pyrekordbox/SQLAlchemy is turned into a fixed-text ``ProviderError ... from
 None`` and only its type name is logged: their messages can embed the
 connection URL, which contains the key.

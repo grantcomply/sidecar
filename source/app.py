@@ -4,6 +4,7 @@ import threading
 import time
 import tkinter as tk
 import webbrowser
+from collections.abc import Sequence
 from typing import Callable, Optional
 
 import customtkinter as ctk
@@ -24,8 +25,8 @@ from source.models.track import Track
 from source.models.library import TrackLibrary
 from source.services.suggestion_engine import get_suggestions
 from source.services.audio_player import AudioPlayer
-from source.providers.base import ProviderCapability, ProviderIssue
-from source.providers.registry import all_providers, get_provider
+from source.providers.base import LibraryProvider, ProviderCapability, ProviderIssue
+from source.providers.registry import all_providers, first_deck_load_provider, get_provider
 from source.services import library_copy as copy
 from source.services import library_merge, library_store
 from source.services.settings_migration import effective_enabled_providers
@@ -73,6 +74,7 @@ class DJTrackSelectorApp(ctk.CTk):
         # Last sync/refresh warnings per provider, this session (not persisted; brief §5.3).
         self._provider_warnings: dict[str, tuple[str, ...]] = {}
         self._noun = "crate"
+        self._multi_provider = False  # 2+ enabled: per-provider crate lines in tooltips (T5.4)
         # Provider ids from a newer version found in settings: warned about once,
         # not on every watcher tick (the watcher re-reads the enabled list each poll).
         self._warned_unknown_providers: set[str] = set()
@@ -153,6 +155,7 @@ class DJTrackSelectorApp(ctk.CTk):
             on_filter_change=self._on_crate_filter_changed,
             audio_player=self._audio_player,
         )
+        self.suggestion_panel.set_crate_lines_fn(self._crate_tooltip_lines)
         self.bottom_pane.add(self.suggestion_panel, stretch="always")
 
         self.session_panel = SessionPanel(
@@ -232,19 +235,23 @@ class DJTrackSelectorApp(ctk.CTk):
             )
         self._update_empty_state(startup=True)
 
-    def _crate_filter_items(self) -> list[tuple[str, str, str]]:
-        """``(crate id, label, provider name)``, providers in registry order (T3c.10).
+    def _crate_filter_items(self) -> list[tuple[str, str, str | None, str]]:
+        """``(crate id, label, provider name, leaf name)``, providers in registry order.
 
-        The filter shows a header per provider when two or more contribute.
+        The filter shows a header per provider when two or more contribute
+        (T3c.10) and the leaf name on a single-selection pill (T5.3). A crate
+        of unknown provider gets group ``None`` (no header) and sorts last.
         """
         order = {p.id: i for i, p in enumerate(all_providers())}
         items = self.library.crate_items  # already sorted by casefolded path
         keyed = [(order.get(self.library.crate_provider(cid) or "", len(order)), i, cid, label)
                  for i, (cid, label) in enumerate(items)]
-        return [
-            (cid, label, self._provider_name(self.library.crate_provider(cid) or ""))
-            for _o, _i, cid, label in sorted(keyed)
-        ]
+        result: list[tuple[str, str, str | None, str]] = []
+        for _o, _i, cid, label in sorted(keyed):
+            pid = self.library.crate_provider(cid)
+            group = self._provider_name(pid) if pid is not None else None
+            result.append((cid, label, group, self.library.crate_leaf(cid)))
+        return result
 
     def _update_empty_state(self, *, startup: bool = False) -> None:
         """Dashboard placeholder for an empty library (brief §5.8); toast on startup only."""
@@ -268,10 +275,27 @@ class DJTrackSelectorApp(ctk.CTk):
 
     def _apply_noun(self) -> None:
         """"crate" (Serato only) or "playlist" (any rekordbox, or a mix): brief §5.6."""
-        nouns = [get_provider(pid).crate_noun for pid in self._enabled_registered_providers()]
-        self._noun = copy.crate_noun_for(nouns)
+        enabled = self._enabled_registered_providers()
+        self._multi_provider = len(enabled) > 1
+        self._noun = copy.crate_noun_for([get_provider(pid).crate_noun for pid in enabled])
         self.suggestion_panel.set_noun(self._noun)
         self.dashboard.set_crate_noun(self._noun)
+
+    def _crate_tooltip_lines(self, crate_ids: Sequence[str]) -> list[str]:
+        """Suggestion tooltip crate lines (brief §5.10, T5.4).
+
+        One provider enabled: ``Playlists: A, B``. More: one line per provider
+        holding the track, registry order (``rekordbox: Club / Peak``).
+        """
+        if not self._multi_provider:
+            labels = [self.library.crate_label(cid) for cid in crate_ids]
+            return copy.crate_tooltip_lines([(None, labels)], self._noun)
+        order = [p.id for p in all_providers()]
+        groups = [
+            (self._provider_name(pid) if pid is not None else None, labels)
+            for pid, labels in self.library.crates_by_provider(crate_ids, order)
+        ]
+        return copy.crate_tooltip_lines(groups, self._noun)
 
     def _reload_library(self, preserve_state: bool = False) -> None:
         """Load every enabled provider's stored snapshot into the library.
@@ -346,6 +370,22 @@ class DJTrackSelectorApp(ctk.CTk):
                 self._warned_unknown_providers.add(pid)  # once, not every watcher tick
                 logger.warning("Unknown library provider %r in settings; skipped", pid)
         return [pid for pid in known if pid in enabled]
+
+    def deck_load_provider_for(self, track: Track) -> LibraryProvider | None:
+        """The provider that can load ``track`` to a deck, or ``None`` (T4.4, blueprint D12).
+
+        The single gate any future load-to-deck control must use: the first
+        enabled provider holding the track (precedence order) that declares
+        ``DECK_LOAD``. No provider declares it yet, so this returns ``None``
+        and nothing in the UI calls it in this feature.
+
+        Cost: every call reads ``settings.env`` from disk (enabled providers,
+        then each candidate's settings). Fine for one track on demand; cache
+        the enabled list and settings before Phase 6 calls it per row.
+        """
+        enabled = set(self._enabled_registered_providers())
+        candidates = [pid for pid in track.sources if pid in enabled]
+        return first_deck_load_provider(candidates, self._provider_settings)
 
     # ── Live refresh (ADR-015 D11) ──
 

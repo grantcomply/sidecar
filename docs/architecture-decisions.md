@@ -78,7 +78,7 @@
   - Con: Requires moving files into a `source/` subdirectory (one-time reorganization)
 
 ### ADR-005: Cross-Platform Path Detection
-- **Status:** Proposed
+- **Status:** Accepted (implemented). Superseded in part by ADR-015: Serato path detection now lives in `SeratoProvider` (`SeratoProvider.default_settings()`, `source/providers/serato/provider.py:66-68`), and `config.FALLBACK_SUBCRATES_DIR` no longer exists. rekordbox database detection lives in `source/providers/rekordbox/paths.py:24-32`.
 - **Date:** 2026-04-06
 - **Context:** `config.py:8` hardcodes `C:\Users\grant\Music\_Serato_\Subcrates` and `export_crates.py:13` hardcodes `DEFAULT_MUSIC_ROOT = "C:\\"`. These break on macOS and Linux.
 - **Decision:** Replace hardcoded paths with platform-aware defaults using `pathlib.Path`:
@@ -104,7 +104,7 @@
   - Con: None
 
 ### ADR-007: Replace CSV Cache with Single JSON Cache File
-- **Status:** Proposed
+- **Status:** Accepted (implemented); **superseded in part by ADR-015** (structure → per-provider snapshots, schema v4). The single `track_cache.json` and `cache.py` are gone. Each provider now has its own snapshot at `user_data_dir()/library/<provider_id>.json` (`source/services/library_store.py`). The **version-mismatch rule below still applies, per snapshot file**. A legacy v3 `track_cache.json` is converted once, read-only, to `library/serato.json` and left in place (`library_store.convert_legacy_cache_if_needed`, `source/services/library_store.py:378-411`).
 - **Date:** 2026-04-06
 - **Supersedes:** ADR-002 (CSV-Based Track Storage)
 - **Context:** The current architecture uses CSV files (one per crate) as an intermediate cache between Serato .crate parsing and in-memory track data. The question was raised whether to eliminate this cache entirely and parse .crate files + ID3 tags directly on every launch.
@@ -192,12 +192,15 @@
 
   **4. Unsigned binaries on both platforms.** Code signing costs money ($99/year Apple Developer Program, $200+/year Windows OV/EV certificate). For a hobby app shipping to friends, neither is justifiable. Users hit SmartScreen on Windows and Gatekeeper on macOS once per install; both workarounds are a few clicks and documented in the README. The alternative — paying for a cert — would be the single largest ongoing cost of the project and buys only a small UX polish.
 
-  **5. `platformdirs` for user data locations.** Considered hand-rolled `os.environ["APPDATA"]` / `~/Library/Application Support` lookups. `platformdirs` is small, pure-Python, well-maintained, and correctly handles edge cases (XDG fallback on Linux, roaming vs local on Windows). Cache and settings live in `%APPDATA%\SeratoSidecar\` on Windows and `~/Library/Application Support/SeratoSidecar/` on macOS so they survive upgrades — PyInstaller bundles extract into read-only temp dirs, so storing user data next to the exe is not an option.
+  **5. `platformdirs` for user data locations.** Considered hand-rolled `os.environ["APPDATA"]` / `~/Library/Application Support` lookups. `platformdirs` is small, pure-Python, well-maintained, and correctly handles edge cases (XDG fallback on Linux, roaming vs local on Windows). Settings and library snapshots live in `%APPDATA%\DJSidecar\` on Windows and `~/Library/Application Support/DJSidecar/` on macOS so they survive upgrades — PyInstaller bundles extract into read-only temp dirs, so storing user data next to the exe is not an option.
+
+  > **Amended 2026-11-05 (ADR-015 D10, rebrand to "Sidecar").** The data dir was `SeratoSidecar` up to v0.1.6 and is renamed to `DJSidecar`, with a **copy-forward migration** (task T5.6): on first launch, if `DJSidecar` has no `settings.env` and the legacy `SeratoSidecar` dir has one, Sidecar **copies** (never moves) `settings.env`, `settings.env.pre-schema2.bak` and the `library/` tree (plus `track_cache.json` if there is no `library/`). `diagnostics/` is not copied. The legacy dir is left intact, so a downgrade still works. `settings.env` is copied **last**, through a temp file, so its presence marks a finished copy and an interrupted copy is retried on the next start. An `OSError` is logged as a warning and never stops startup. The migration runs once per process inside `config.user_data_dir()`, before `ENV_FILE` is computed (`source/config.py:41-106`). Setting the env var `SIDECAR_SKIP_DATA_DIR_MIGRATION` disables it; the test suite sets it in `tests/conftest.py` so tests can never copy real user data. Display name: **"Sidecar"**. Exe: `DJSidecar.exe`; installer `DJSidecar-Setup-<ver>.exe`; Mac bundle `DJSidecar.app`. **Never change:** the Inno Setup `AppId` (`build/installer.iss:32`, so the installer upgrades in place), the updater manifest URL (`source/services/updater.py`), the macOS `bundle_identifier` (`serato-sidecar.spec`), or the logo asset (`source/ui/SeratoSidecarLogo.png`, deferred by the user). The installer removes the stale `SeratoSidecar.exe` and old shortcuts via `[InstallDelete]`.
 
 - **Consequences:**
   - Pro: Zero ongoing hosting cost, zero signing cost, free CI minutes on macOS.
   - Pro: Friends can install the app with one download and one click-through of a security prompt.
-  - Pro: User data is preserved across upgrades automatically; no migration logic needed per release.
+  - Pro: User data is preserved across upgrades automatically. One exception so far: the one-time `SeratoSidecar` → `DJSidecar` copy-forward (amendment above). Data-format changes inside the dir are migrated by `services/settings_migration.py` (settings schema 2) and `services/library_store.py` (v3 cache → v4 snapshots).
+  - Con (added by ADR-015): The build now ships a **mandatory native dependency**: `pyrekordbox==0.5.0`, `sqlcipher3-wheels==0.5.7` (SQLCipher, native) and `SQLAlchemy==2.1.8` (plus `psutil`, native, which pyrekordbox needs), all pinned in `requirements.txt`. CI installs them with `--only-binary=sqlcipher3-wheels,psutil` and runs the frozen `--self-check-rekordbox` on both platforms (`.github/workflows/release.yml`). The spec must collect `pyrekordbox`, `sqlcipher3` and the SQLAlchemy SQLite dialect. The import is lazy (ADR-009 pattern), so a broken native module disables rekordbox only. rekordbox upgrades can require a pyrekordbox bump and a re-release (runbook in `docs/deployment-guide.md`).
   - Pro: The updater is small enough to audit in one sitting and has no framework lock-in.
   - Con: Unsigned binaries produce a scary one-time dialog on both platforms — requires a clear README explanation to avoid users bouncing.
   - Con: The roll-your-own updater offers no silent in-place upgrade (user has to click Download and run the installer). Acceptable trade-off for this scale.
@@ -421,3 +424,133 @@ The load-bearing technical fact: the bundled interpreter is **Python 3.11.9**, w
 - **R1 — Windows `st_ctime` semantic on 3.11.** Correctly handled: the helper only falls through to `st_ctime` after the `st_birthtime` check (absent on Windows 3.11). When the bundled interpreter moves to 3.12+, `st_birthtime` transparently takes precedence — no code change needed. Locked by `tests/services/test_file_times.py::test_windows_python_311_returns_ctime`.
 - **R5 — Stale UI caveat copy (resolved here).** ADR-011's date-panel caveat ("Dates are approximate for tracks added before your first sync") is no longer accurate. Replaced with "Date added is the file's creation date on this computer." (`source/ui/filter_bar.py`).
 - **Open question — future Serato `database V2` add-date.** Still the truest "when I added it to my library" source, still out of scope (undocumented binary format). Revisit only on request.
+- **Note (ADR-015 D9):** ADR-013 holds for every library provider. rekordbox tracks read `date_added` from the creation time of the **resolved** local file, not from rekordbox's `StockDate` (the import date).
+
+---
+
+### ADR-014: Virtual MIDI deck loader (Serato)
+- **Status:** Rejected (recorded 2026-11-05)
+- **Date:** 2026-09-19
+- **Context / finding:** A virtual MIDI note mapped to "Load to Deck" loads whatever track is *selected in the DJ app's own browser*. The note cannot identify a track, so it cannot load the track chosen in Sidecar. See `plans/virtual-midi-deck-loader-2026-09/architect-blueprint.md` §1.3. The draft ADR in that plan was never written here; this entry records the outcome.
+- **Consequence:** Any future deck-loading implementation (the ADR-015 `DECK_LOAD` capability) must show how it targets a **specific** track before it is accepted. `SeratoProvider` never declares `DECK_LOAD`, and its `load_to_deck` raises `DeckLoadNotSupported` (`source/providers/serato/provider.py:142-149`).
+
+---
+
+### ADR-015: DJ library providers and per-provider library snapshots
+
+- **Status:** Accepted
+- **Date:** 2026-11-05 (implemented in commit `4578d5c`)
+- **Supersedes in part:** ADR-007 (single `track_cache.json` → one snapshot per provider, schema v4); ADR-005 (Serato default-path detection moves from `config.py` into `SeratoProvider`).
+- **Relates to:** ADR-008 (data-dir rename and copy-forward; `AppId` unchanged; mandatory native dependency), ADR-009 (lazy import and degradation, reused for `pyrekordbox`), ADR-012 (`SuggestionFilters.allowed_crates` stays `frozenset[str]`, but now holds crate **ids**), ADR-013 (`date_added` stays file creation time for every provider), ADR-014 (sets the bar for `DECK_LOAD`).
+- **Design record:** `plans/dj-library-providers-2026-11/architect-blueprint.md` (the full D1–D12 text, risks R1–R20) and `implementation-plan.md`. This ADR summarises the decisions **as built**. Where the blueprint and the code differ, the code is described here.
+
+#### Context
+Sidecar was built as a Serato companion. Serato-specific parsing, paths and naming ran through config, services, the model loader, app orchestration and the settings dialog. The user moved to rekordbox and wants to enable either source or both, with rekordbox read live from its database. The crate filter used display names as identities, so same-named crates from two sources would have collided. The cache was one file with no notion of where its data came from. The user also wanted deck loading to be part of the provider contract, even though no provider can do it yet.
+
+#### Decision
+
+**D1: A `LibraryProvider` protocol is the only place DJ-software knowledge lives.** Package `source/providers/`:
+- `base.py`: the contract. A stdlib-only leaf, guarded by `tests/providers/test_base_isolation.py`.
+- `registry.py`: `PROVIDERS` (insertion order = display order, fresh-install detection order and merge precedence: **rekordbox, then serato**, `registry.py:19-22`), `get_provider`, `all_providers` and `first_deck_load_provider`.
+- `serato/` and `rekordbox/`.
+
+Providers are **stateless** with respect to the contract: settings are passed into every call. Pure memo caches that change only speed, never results, are allowed (the rekordbox energy cache). **Nothing outside `source/providers/` imports a concrete provider except `registry.py`.** Providers may use the leaf helpers in `source/services/` (`tag_reader`, `camelot`, `file_times`, `comment_format`, `log_safety`, `crate_parser`). They never use UI, `config` accessors or the library store.
+
+**The contract** (`source/providers/base.py:125-175`):
+
+| Member | Meaning |
+|---|---|
+| `id` | Persisted. **Never rename** (`"serato"`, `"rekordbox"`) |
+| `display_name` | Vendor styling: `"Serato DJ"`, `"rekordbox"` (lowercase, even at the start of a sentence) |
+| `crate_noun` | `"crate"` (Serato) or `"playlist"` (rekordbox). The UI pluralises with "s". Rule for the shown word: Serato only → "Crates"; any rekordbox → "Playlists" (`library_copy.crate_noun_for`, `source/services/library_copy.py:85-96`) |
+| `setting_specs()` | `SettingSpec` list (`key`, `env_key`, `label`, `kind`, `choices`, `visible_when`, `file_patterns`, `placeholder`, `hint`, `browse_title`, `required`, `secret`). The settings dialog renders from these and never branches on a provider id |
+| `default_settings()` | Platform-aware defaults (stat calls only) |
+| `detect()` | True if this DJ app's library appears to exist. Used for first-run defaults only |
+| `detected_values(settings)` | Values in effect for settings left **empty**: display only, never persisted, stat calls only, UI-thread safe. Serato returns `{}`; rekordbox returns `{"db_path": …}` only when the field is empty and an existing `master.db` is found (`rekordbox/provider.py:117-124`). Lets the dialog show the auto-detected database as a placeholder without provider branching. Added in Phase 3c |
+| `capabilities(settings)` | A `frozenset[ProviderCapability]`. It depends on settings (rekordbox drops `CHANGE_DETECTION` when auto-update is off) |
+| `validate(settings)` | Cheap and UI-thread safe; never imports optional dependencies (uses `importlib.util.find_spec`) |
+| `scan(settings, progress)` | Blocking; background thread only. Returns a `ProviderSnapshot`; raises `ProviderError` |
+| `change_token(settings)` | Stat-only, any thread. `None` unless `CHANGE_DETECTION` is declared |
+| `load_to_deck(settings, track_path, deck)` | 1-based deck; may block, so call it off the Tk thread. Raises `DeckLoadNotSupported` unless `DECK_LOAD` is declared |
+
+**Capability flags** (`base.py:61-66`):
+
+| Capability | Serato | rekordbox | Rule |
+|---|---|---|---|
+| `PLAYLIST_FOLDERS` | yes | yes | Crates have a hierarchy (`CrateInfo.path`) |
+| `SMART_PLAYLISTS` | no | no | rekordbox smart playlists are read defensively if pyrekordbox can evaluate them, but the capability is not declared (unverified; the user has none) |
+| `NATIVE_PLAY_COUNT` | yes | yes | The provider's play count is authoritative. **Merge consequence:** the highest-precedence record's `play_count` wins **even when it is 0** (D6) |
+| `CHANGE_DETECTION` | no (a scan re-reads every tag; too heavy to run automatically) | yes while `REKORDBOX_AUTO_REFRESH=on` | `change_token()` must return `None` without it (contract-tested) |
+| `DECK_LOAD` | no (ADR-014) | no (Phase 6 follow-up) | `load_to_deck()` must raise `DeckLoadNotSupported` without it (contract-tested) |
+
+**Message convention:** `ProviderIssue.message` and `ProviderError` text are short phrases with an initial capital, no trailing period, no provider name and no file path (`base.py:11-13`). They must fit the 75-character partial-failure toast.
+
+**D2: A provider produces a `ProviderSnapshot`.** Tracks are keyed by the provider-native absolute path, as `TrackRecord` dicts (the existing cache track schema plus `crates: list[crate_id]`), plus a crate index `dict[crate_id, CrateInfo]` that includes empty crates. Providers never build `Track` objects and never touch `TrackLibrary`.
+
+**D3: Crates have globally unique ids, separate from their labels.** `crate_id = f"{provider_id}:{native_id}"`: the Serato `.crate` filename stem (`serato:House%%Bangers`) or the rekordbox `djmdPlaylist.ID` (`rekordbox:41`). `CrateInfo` carries `label`, `path` (folder hierarchy, leaf last), `provider_id` and `is_smart`. `Track.crates` and `SuggestionFilters.allowed_crates` hold **ids**; the UI shows labels only. Same-named crates from two providers are distinct entries, grouped by provider in the filter. Stable ids let a live refresh keep the filter selection.
+
+**D4: One snapshot per provider (schema v4).** `user_data_dir()/library/<provider_id>.json` holds `schema`, `provider`, `synced_at`, `fingerprint`, `change_token`, `content_hash`, `crates` and `tracks`. **As built, there is also a small `<provider_id>.meta.json`** (`synced_at`, `change_token`, `content_hash`, `fingerprint`, counts; `library_store.py:180-193`). When a sync's content hash is unchanged, only the metadata file is rewritten, so the live-refresh baseline advances without rewriting a multi-megabyte file every minute. `load_snapshot` takes the token from the metadata only when its hash matches the snapshot. All writes are atomic (temp file + `replace_with_retry`), and orphan `*.tmp` files older than 60 s are cleaned at startup. Why one file per provider:
+- syncing one provider never rescans another;
+- a failed sync keeps that provider's last good snapshot (the safety net for a rekordbox upgrade that breaks decryption);
+- disabling a provider just skips its file, so re-enabling it is instant;
+- the merge stays a pure in-memory function.
+
+A schema or provider mismatch makes that one file load as "no snapshot" (the ADR-007 rule, per file).
+
+**D5: Sync is orchestrated by `services/library_sync.py`, which replaces `crate_sync.py`.** One daemon thread scans the requested providers **sequentially** and saves each snapshot. It returns a `SyncReport` with one `ProviderSyncResult` per provider: counts, warnings, error, `changed` and `change_token`. Error policy: providers raise `ProviderError` for configuration-level failures; per-track problems become snapshot warnings; the orchestrator catches `ProviderError` and `OSError` per provider, plus **one** documented last-resort `except Exception` at the thread boundary (`library_sync.py:80-84`). One provider's failure never stops the others. `SyncCoordinator` (`library_sync.py:123-253`) is single-flight: requests that arrive during a run are coalesced into one follow-up, merged by provider id. The follow-up is silent only if every merged request was silent.
+
+**D6: The multi-provider merge is a pure function (`services/library_merge.py`).** The input is the enabled providers' snapshots in **precedence order** (registry order, rekordbox first; `PROVIDERS_ENABLED` is written in that order). The output is merged tracks keyed by `path_key` and the combined crate index.
+- **Identity is the path only:** `path_key = NFC(normcase(normpath(p)))` in the leaf module `source/models/path_identity.py`. No fuzzy matching. Phase 0 confirmed that rekordbox's `OrgFolderPath` matches every Serato track path in the user's library.
+- **Precedence rules** (`library_merge.py:5-18`, `:59-84`):
+  - `crates` is the ordered **union** of ids. `sources` (`Track.sources`) is the ordered tuple of provider ids that contain the file. `full_file_path` comes from the highest-precedence record.
+  - Every other field takes the first **non-empty** value in precedence order (`""`, `0`, `0.0` and `None` count as empty). So **rekordbox wins per non-empty field**, and Serato only fills fields that rekordbox leaves empty. A shared track shows rekordbox's comment, even when Serato's is the structured one.
+  - **`key` and `camelot_key` are taken as a pair** from the first record with a non-empty `camelot_key`, so a track never shows one provider's key beside the other's Camelot value.
+  - **`play_count`:** if the highest-precedence record's provider declares `NATIVE_PLAY_COUNT`, its value wins **even when it is 0**. Both providers declare it, so rekordbox's play count always wins for shared tracks. The app passes the declaring ids (`app.py:289-294`).
+  - Crate-id collisions across snapshots indicate a bug: they are logged and the first is kept.
+- `TrackLibrary.replace_all(tracks, crates)` receives the merged data. The library reloads from **stored** snapshots, so a provider whose latest sync failed still contributes its older data.
+
+**D7: Settings stay in `settings.env`, keyed `<PROVIDER>_<SETTING>`.** `PROVIDERS_ENABLED=rekordbox,serato` (ordered; the order is the merge precedence). `SERATO_SUBCRATES_DIR` keeps its legacy name. `REKORDBOX_DB_PATH` (blank = auto-detect) and `REKORDBOX_AUTO_REFRESH=on|off` (default `on`). `SETTINGS_SCHEMA=2`. **No key setting:** the rekordbox key is built into pyrekordbox 0.5.0. `SettingKind.TEXT` and `SettingSpec.secret` exist in the contract but are unused. `services/settings_migration.py` runs once at startup:
+- an existing install gets `PROVIDERS_ENABLED=serato`;
+- a fresh install enables whatever `detect()` finds, rekordbox first;
+- the settings file is backed up once (`settings.env.pre-schema2.bak`), and nothing is ever deleted.
+
+The dialog's Save writes the enabled list and every provider's values in **one** atomic write (`config.save_library_settings`, `source/config.py:174-190`).
+
+**D8: The rekordbox provider reads a private copy of `master.db`.**
+- **Copy-then-read (the read-only rule).** `rekordbox/db_copy.py` copies `master.db` and, when present, `master.db-wal`, `master.db-journal` and `masterPlaylists6.xml` into a fresh `tempfile.mkdtemp(prefix="sidecar-rb-")` folder (`db_copy.py:27-45`). **`master.db-shm` is not copied:** it is SQLite's shared-memory index, which SQLite rebuilds from `-wal` on the copy. A copied `-shm` can be inconsistent with the copied `-wal`, and the no-`-shm` copy is what Phase 0 verified while rekordbox was running. **SQLite never opens anything in rekordbox's folder**; opening the original in place would write `-shm`.
+- **Torn-copy guard:** the change token is taken before and after copying, with up to 3 attempts 200 ms apart (`db_copy.py:69-89`). The copy must then pass `PRAGMA quick_check`; on failure the provider re-copies once (`provider.py:163-175`). If it still fails, the scan raises `ProviderError("Database is busy, try again")` and the last good snapshot stays loaded. The temp folder is deleted in `finally`, and stale `sidecar-rb-*` folders older than one hour are removed at the start of the next scan.
+- **Only `rekordbox/db_reader.py` imports `pyrekordbox` or SQLAlchemy**, lazily (ADR-009 pattern). If the import fails, `validate()` reports `Not available in this build`, `scan()` raises the same message, and Serato keeps working. The reader calls no write API, even on the copy. It closes the database and disposes the engine so that Windows releases the file handles.
+- **Key and log safety (requirement; tested).** Sidecar never passes, stores or logs a key. `services/log_safety.py` holds the **`pyrekordbox` logger tree at ERROR** and the **`sqlalchemy` tree at WARNING**, or stricter (`log_safety.py:19-22`). It is called in `main.py` before any project import, again after pyrekordbox is imported, and again after the engine is created. The `db_reader` boundary catches every pyrekordbox/SQLAlchemy exception, logs only the **type name**, and raises a fixed-text `ProviderError` outside the `except` block, so neither `__cause__` nor `__context__` carries the original message (`db_reader.py:223-237`).
+- **Scope and mapping:** "crates" are playlists (`Attribute` 0, plus 4 = smart, read best-effort); folders (`Attribute` 1) only form `CrateInfo.path`. The library contains only tracks that are in at least one playlist, as with Serato. The path is resolved by `rekordbox/paths.resolve_track_path`: `OrgFolderPath` → local `FolderPath` (not `/contents_…`) → `rb_LocalFolderPath`, preferring a file that exists, then `os.path.normpath` to native separators. rekordbox's analysed key wins over any key in the comment. BPM is stored ×100. Energy follows the user's option (a): the comment's energy when it parses as `<key> - <energy> - …`, otherwise the file's `TXXX:EnergyLevel` tag (ID3 only), memoised in `energy_cache.py` by `(path_key, mtime_ns, size)`, otherwise 0. Rating, Colour, My Tag and `StockDate` are not mapped.
+
+**D9: `date_added` stays file creation time for every provider** (ADR-013), read from the resolved path.
+
+**D10: Rebrand to "Sidecar"; internal identities stay stable.** See the ADR-008 amendment: display name "Sidecar", file identifier `DJSidecar`, data dir `SeratoSidecar` → `DJSidecar` with a copy-forward migration. `AppId`, the updater manifest URL, `bundle_identifier`, provider ids and the logo asset do not change.
+
+**D11: Live refresh by polling a stat-only change token (`services/library_watcher.py`).**
+- **Token:** for rekordbox, `(st_mtime_ns, st_size)` of `master.db` **and** `master.db-wal`, with a missing file recorded as absent (`rekordbox/paths.py:56-69`). rekordbox writes to `-wal` first, so the token must include it. `-shm` is excluded because it changes with rekordbox's own reads and checkpoints. Serato returns `None`.
+- **Policy** (constants in `source/config.py:226-234`; decisions are the pure functions `should_refresh` and `record_refresh_result`):
+  - **Poll** every `REFRESH_POLL_SECONDS` = **10 s** on one daemon thread. Targets are the enabled providers that declare `CHANGE_DETECTION`.
+  - A token that differs from the one in the provider's stored snapshot must stay stable for `REFRESH_SETTLE_SECONDS` = **5 s** (the write burst is over).
+  - At most **one refresh per provider per `REFRESH_MIN_INTERVAL_SECONDS` = 60 s**.
+  - **Adaptive backoff:** every **3** consecutive refreshes that changed nothing **double** the effective minimum interval, up to `REFRESH_MAX_INTERVAL_SECONDS` = **300 s**. An idle rekordbox rewrites its WAL about every 30 s. Any real change, or a manual sync, resets the interval to 60 s.
+  - **Refresh on focus:** when the main window regains focus (`<FocusIn>`, debounced to one check per 2 s burst, `app.py:375-379`), a provider whose token differs from its baseline is refreshed at once, with no settle wait, provided at least `REFRESH_FOCUS_FLOOR_SECONDS` = **30 s** have passed since its last request. The floor is 30 s so that switching focus cannot bypass the backoff.
+  - The stored token survives restarts, so the first tick at startup picks up changes made while Sidecar was closed.
+- **A refresh is a silent sync of that one provider.** If `content_hash` is unchanged, nothing reloads. Otherwise `app._reload_library(preserve_state=True)` keeps the current track, setlist, filter selections and any playing preview, and no "Synced" toast is shown. A background failure shows one amber toast per distinct error. `REKORDBOX_AUTO_REFRESH=off` turns the watcher off for rekordbox; the change is picked up on the next tick, with no restart.
+
+**D12: Load-to-deck is a reserved capability that no provider implements.** `ProviderCapability.DECK_LOAD` + `load_to_deck(settings, track_path, deck)`. **Both providers raise `DeckLoadNotSupported`**: Serato because of ADR-014 (`serato/provider.py:142-149`), rekordbox because it is the Phase 6 follow-up (`rekordbox/provider.py:157-159`). The single gate is `registry.first_deck_load_provider(provider_ids, settings_for)` (`registry.py:35-53`), which returns `None` today. **UI rule:** any deck-load control stays hidden while that gate returns `None` for the track's `sources`. Phase 6 needs its own ADR that meets ADR-014's bar.
+
+#### Accepted layering exception
+`services/diagnostics.py` imports `providers.rekordbox.paths` (`TOKEN_FILES`, `resolve_db_path`; `diagnostics.py:24-26`), the only import of a concrete-provider module outside `source/providers/` and `registry.py`. **Accepted** because the diagnostics are rekordbox-specific by purpose: `--self-check-rekordbox` (CI: the frozen build can import pyrekordbox and load SQLCipher, with no DB access) and `--check-rekordbox-library` (the upgrade runbook: a counts-only report with no titles, paths or key, home folder shown as `~`). Sharing the provider's path rule means the report and the provider cannot drift apart. No other module may follow this precedent without its own note here.
+
+#### Consequences
+- Pro: A third source means a new subpackage plus a registry entry. The engine, filters, session and playback do not change.
+- Pro: Serato behaviour is guarded by a golden-equivalence test across the refactor (`tests/services/test_serato_equivalence.py`). An existing Serato user upgrades with no visible change.
+- Pro: Crate identity is separated from display, which fixes a latent collision and lets a live refresh keep the filter state.
+- Pro: rekordbox is live, with no export step and a sub-second read. Reading a private copy leaves rekordbox's folder untouched, even while rekordbox runs.
+- Con: A mandatory native dependency (`sqlcipher3-wheels`) is in the product, and the decryption key lives in a third-party library. A rekordbox upgrade may break reading until pyrekordbox is updated and re-pinned (accepted; runbook in `docs/deployment-guide.md`). The last good snapshot keeps the app usable in the meantime.
+- Con: pyrekordbox logs the key at DEBUG. This is a standing constraint: its loggers must never be turned down, and the guard is tested.
+- Con: The energy fallback adds tag reads to rekordbox scans. They are limited to in-scope tracks without comment energy and memoised for the life of the process. The reader is ID3-only, so non-MP3 tracks get energy 0 unless the comment carries it.
+- Con: More moving parts: about 20 new modules, a persisted format plus a converter, a watcher thread, and short-lived temp copies of the user's database.
+- Con: The contract carries a method (`load_to_deck`) that no provider implements yet.
+- Future option (not planned): an XML-export source mode inside `source/providers/rekordbox/`, without contract changes.

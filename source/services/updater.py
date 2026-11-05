@@ -1,5 +1,5 @@
 """
-Auto-update check for Serato Sidecar.
+Auto-update check for Sidecar.
 
 Fetches a small JSON manifest from the project's GitHub releases page and
 compares the advertised version against the currently running version. If a

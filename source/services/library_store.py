@@ -196,7 +196,6 @@ def _write_meta(
 def save_snapshot(snapshot: ProviderSnapshot, *, synced_at: str | None = None) -> bool:
     """Persist ``snapshot`` atomically. Returns True if its content changed.
 
-    Unchanged content (same hash as the metadata file records, and the
     ``synced_at`` (UTC ISO) defaults to now; the legacy-cache conversion passes
     the old cache's sync time so the settings chip doesn't claim "just now".
     Unchanged content (same hash as the metadata file records, and the

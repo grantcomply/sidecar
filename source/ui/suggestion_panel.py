@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 
 from source.config import CAMELOT_COLORS, energy_color
-from source.services.library_copy import cleared_filter_message, crates_heading, noun_title
+from source.services.library_copy import cleared_filter_message, crate_tooltip_lines, noun_title
 from source.services.suggestion_filters import SuggestionFilters, build_filters, reconcile_filters
 from source.services.waveform import WaveformGenerator
 from source.ui.filter_bar import FilterBar, FloatingOverlay
@@ -102,6 +102,8 @@ class SuggestionPanel(ctk.CTkFrame):
         self._on_filter_change = on_filter_change
         self._audio_player = audio_player
         self._crate_labels: dict[str, str] = {}  # crate id -> display label
+        # Crate ids -> tooltip lines; the app swaps in per-provider lines (T5.4).
+        self._crate_lines_fn: Callable[[Sequence[str]], list[str]] = self._default_crate_lines
         self._noun = "crate"  # "crate" or "playlist", from the enabled providers
         # Quiet (live-refresh) re-render state.
         self._last_signature: tuple | None = None  # visible content of the rendered list
@@ -220,14 +222,24 @@ class SuggestionPanel(ctk.CTkFrame):
 
     # ── Public API ──
 
-    def set_crates(self, items: Sequence[tuple[str, ...]], *, preserve_selection: bool = False):
-        """Set the crate filter from ``(crate_id, label)`` or ``(crate_id, label, group)`` items."""
-        self._crate_labels = {item[0]: item[1] for item in items}
+    def set_crates(
+        self, items: Sequence[tuple[str | None, ...]], *, preserve_selection: bool = False,
+    ):
+        """Set the crate filter from ``(crate_id, label[, group[, leaf]])`` items."""
+        self._crate_labels = {str(item[0]): str(item[1]) for item in items}
         self.filter_bar.crate_filter.set_items(items, preserve_selection=preserve_selection)
 
     def _crate_label(self, crate_id: str) -> str:
         """Display label for a crate id (falls back to the id itself)."""
         return self._crate_labels.get(crate_id, crate_id)
+
+    def set_crate_lines_fn(self, fn: Callable[[Sequence[str]], list[str]] | None) -> None:
+        """Set how a row tooltip lists its crates; ``None`` restores ``{Nouns}: A, B``."""
+        self._crate_lines_fn = fn if fn is not None else self._default_crate_lines
+
+    def _default_crate_lines(self, crate_ids: Sequence[str]) -> list[str]:
+        labels = [self._crate_label(c) for c in crate_ids]
+        return crate_tooltip_lines([(None, labels)], self._noun)
 
     def set_genres(self, genre_names: list[str], *, preserve_selection: bool = False):
         self.filter_bar.genre_filter.set_items(genre_names, preserve_selection=preserve_selection)
@@ -621,9 +633,9 @@ class SuggestionPanel(ctk.CTkFrame):
                 f"Energy: {int(scored.energy_score * 100)}%   "
                 f"BPM: {int(scored.bpm_score * 100)}%",
             ]
-            if track.crates:
-                labels = ", ".join(self._crate_label(c) for c in track.crates)
-                tip_lines.append(f"\n{crates_heading(self._noun)}: {labels}")
+            crate_lines = self._crate_lines_fn(track.crates) if track.crates else []
+            if crate_lines:
+                tip_lines.append("\n" + "\n".join(crate_lines))
             Tooltip(row, "\n".join(tip_lines))
 
     # ── Track selection ──

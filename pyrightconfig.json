@@ -10,6 +10,7 @@
     "exclude": [
         "**/__pycache__",
         "build/SeratoSidecar",
+        "build/DJSidecar",
         "build/output",
         "dist"
     ],

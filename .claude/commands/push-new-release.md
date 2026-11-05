@@ -6,7 +6,7 @@ allowed-tools: AskUserQuestion, Read, Edit, Write, Bash
 
 # Push a new release
 
-Cut a new Serato Sidecar release: confirm the version number, bump it, commit, tag,
+Cut a new Sidecar release: confirm the version number, bump it, commit, tag,
 push, then watch the GitHub Actions release workflow build the installers and publish
 the release.
 
@@ -103,7 +103,7 @@ the version confirmation in Step 1 was the gate.
 ### Step 6 — verify and confirm
 
 - `gh release view vX.Y.Z --json name,tagName,url,assets` — confirm three assets are
-  attached: `SeratoSidecar-Setup-X.Y.Z.exe`, `SeratoSidecar-X.Y.Z-mac.zip`, and
+  attached: `DJSidecar-Setup-X.Y.Z.exe`, `DJSidecar-X.Y.Z-mac.zip`, and
   `latest.json`.
 - Report to the user: the release URL, the three assets, and that installed clients on
   the previous version will see the update toast on their next launch.

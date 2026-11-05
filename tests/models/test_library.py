@@ -80,3 +80,44 @@ def test_search_still_matches_title(make_track):
 
     assert [t.title for t in library.search("groove")] == ["Deep Groove"]
     assert library.search("  ") == []
+
+
+# ── Attribution helpers (T5.3 leaf pill, T5.4 tooltip lines) ──
+
+
+def _rb(native: str, path: tuple[str, ...]) -> CrateInfo:
+    return CrateInfo(f"rekordbox:{native}", "rekordbox", " / ".join(path), path)
+
+
+def test_crate_leaf_is_last_path_part_with_fallbacks(make_track):
+    crates = {
+        "rekordbox:1": _rb("1", ("Club", "Peak")),
+        "serato:A%%B": _crate("A%%B", "A - B"),
+        "serato:Odd": CrateInfo("serato:Odd", "serato", "Odd label", ()),
+    }
+    library = _library(make_track, [], crates)
+    assert library.crate_leaf("rekordbox:1") == "Peak"
+    assert library.crate_leaf("serato:A%%B") == "B"
+    assert library.crate_leaf("serato:Odd") == "Odd label"  # no path: the label
+    assert library.crate_leaf("serato:Ghost") == "serato:Ghost"  # unknown: the id
+
+
+def test_crates_by_provider_groups_labels_in_provider_order(make_track):
+    crates = {
+        "rekordbox:1": _rb("1", ("Club", "Peak")),
+        "rekordbox:2": _rb("2", ("Warm up",)),
+        "serato:House": _crate("House", "House"),
+        "other:x": CrateInfo("other:x", "other", "X", ("X",)),
+    }
+    library = _library(make_track, [], crates)
+    ids = ["serato:House", "other:x", "rekordbox:2", "serato:Ghost", "rekordbox:1"]
+
+    assert library.crates_by_provider(ids, ["rekordbox", "serato"]) == [
+        ("rekordbox", ["Warm up", "Club / Peak"]),  # input order kept inside a group
+        ("serato", ["House"]),
+        ("other", ["X"]),  # not in the order: after the known ones
+        (None, ["serato:Ghost"]),  # unknown crate: last, raw id
+    ]
+    assert library.crates_by_provider(["serato:House"], ["rekordbox", "serato"]) == [
+        ("serato", ["House"]),  # a provider without the track gets no group
+    ]
