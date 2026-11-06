@@ -1,23 +1,19 @@
-Smoother filters: stage changes then Apply, one-click Clear, and file-date-based date-added.
+Sidecar now works with rekordbox, alongside or instead of Serato DJ.
 
-## Filters apply when you're ready
+## rekordbox support
 
-Changing a filter no longer reloads suggestions on every click. Stage as
-many changes as you like — across crates, genres, key transition and date —
-and an **Apply / Cancel** bar appears at the bottom. Nothing re-scores until
-you hit **Apply**, so the app stays responsive while you set things up. Pills
-you've edited show a lighter blue until applied, and **Cancel** snaps
-everything back to what was last applied.
+Turn on rekordbox in Settings and Sidecar reads your rekordbox library (keys, BPM, comments, playlists) directly. It reads a private copy, so it never changes rekordbox's files. Edits you make in rekordbox show up in Sidecar within about a minute.
 
-## One-click Clear
+Use rekordbox, Serato DJ, or both. Tracks in both libraries appear once, using rekordbox's details.
 
-Each crate and genre filter now has a **"Clear"** alongside "Select all", so
-you can deselect everything and pick a fresh few. When nothing's selected, the
-panel tells you so clearly instead of just showing an empty list.
+## New settings screen
 
-## Date-added uses the file's creation date
+One card per music source; changes apply when you press Save. The playlist filter is grouped by source and searchable.
 
-The **Added** filter now reflects when each track's file was created on your
-computer, rather than an approximate first-seen date — so looking back at
-recent finds is more accurate. Your library will do a one-time re-sync on
-first launch to pick up the new dates.
+## Renamed to Sidecar
+
+The app is now "Sidecar" (DJSidecar.exe). Your settings and library carry over automatically. If you pinned the old app to the taskbar, re-pin it.
+
+## Other changes
+
+- Lowercase keys in Serato files (e.g. 8a) are now read as 8A.
