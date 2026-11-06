@@ -1,7 +1,7 @@
 # UI Design Guide — Sidecar
 
 > **Status:** Starter draft — seeded from the current codebase, maintained by the `ui-designer` agent
-> **Last updated:** 2026-11-05 (architect, at merge of the library-providers feature: settings dialog, playlist filter, Warning colour, noun rule. Design source: `plans/dj-library-providers-2026-11/ui-design-brief.md` and `ui-audit-phase-3c.md`)
+> **Last updated:** 2026-11-05 (architect, at merge of the library-providers feature: settings dialog, playlist filter, Warning colour, noun rule. Design source: `plans/archive/dj-library-providers-2026-11/ui-design-brief.md` and `ui-audit-phase-3c.md`)
 > **Authoritative for:** visual tokens, component patterns, window layout, microcopy, and UI state conventions
 
 This is the design counterpart to `docs/architecture-overview.md`. The architect owns
