@@ -1,19 +1,9 @@
-Sidecar now works with rekordbox, alongside or instead of Serato DJ.
+Copy any suggestion's artist and title with one click, then paste it into rekordbox or Serato's search to find it.
 
-## rekordbox support
+## Copy to search
 
-Turn on rekordbox in Settings and Sidecar reads your rekordbox library (keys, BPM, comments, playlists) directly. It reads a private copy, so it never changes rekordbox's files. Edits you make in rekordbox show up in Sidecar within about a minute.
+Each suggestion now has a copy button (❐) at the start of its row. Click it and Sidecar puts the track's artist and title on the clipboard. Paste that into the search box in rekordbox or Serato DJ, and the track comes up ready to load.
 
-Use rekordbox, Serato DJ, or both. Tracks in both libraries appear once, using rekordbox's details.
-
-## New settings screen
-
-One card per music source; changes apply when you press Save. The playlist filter is grouped by source and searchable.
-
-## Renamed to Sidecar
-
-The app is now "Sidecar" (DJSidecar.exe). Your settings and library carry over automatically. If you pinned the old app to the taskbar, re-pin it.
-
-## Other changes
-
-- Lowercase keys in Serato files (e.g. 8a) are now read as 8A.
+- Mix names in brackets and "feat." credits are left out, so the search finds every version of the track.
+- The button shows a green ✓ when the copy worked and a red ✕ if it didn't. Hover over it to see exactly what will be copied.
+- Copying doesn't select the track, add it to your setlist or stop a preview.
