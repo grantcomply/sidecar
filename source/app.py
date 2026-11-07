@@ -33,8 +33,10 @@ from source.services.settings_migration import effective_enabled_providers
 from source.services.settings_model import ProviderSettingsView, build_provider_views
 from source.services.library_sync import SyncCoordinator, SyncReport, SyncRequest
 from source.services.library_watcher import LibraryWatcher, Targets
+from source.services.paste_query import paste_query
 from source.services.sync_outcome import sync_outcome
 from source.services.updater import UpdateInfo
+from source.ui.clipboard import copy_to_clipboard
 from source.ui.sync_panel import SettingsDialog
 from source.ui.track_detail import NowPlayingDashboard
 from source.ui.suggestion_panel import SuggestionPanel
@@ -154,6 +156,7 @@ class DJTrackSelectorApp(ctk.CTk):
             on_select=self._on_suggestion_selected,
             on_filter_change=self._on_crate_filter_changed,
             audio_player=self._audio_player,
+            on_copy=self._copy_track_text,
         )
         self.suggestion_panel.set_crate_lines_fn(self._crate_tooltip_lines)
         self.bottom_pane.add(self.suggestion_panel, stretch="always")
@@ -695,6 +698,18 @@ class DJTrackSelectorApp(ctk.CTk):
     def _current_object(self, track: Track) -> Track:
         """The library's current object for this file (lists may predate a live refresh)."""
         return self.library.track_by_path(track.full_file_path) or track
+
+    def _copy_track_text(self, track: Track) -> bool:
+        """Copy the track's paste query; changes no selection, setlist, preview or list."""
+        track = self._current_object(track)
+        text = paste_query(track.artist, track.title, track.file_name)
+        if text is None:
+            return False
+        if not copy_to_clipboard(self, text):
+            self._show_toast(copy.COPY_FAILED, ERROR_COLOR)
+            return False
+        self._show_toast(copy.format_copied_toast(text), SUCCESS_COLOR, duration=SHORT_TOAST_MS)
+        return True
 
     def _on_suggestion_selected(self, track: Track):
         track = self._current_object(track)

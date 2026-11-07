@@ -1,7 +1,7 @@
 # Architecture Overview — Sidecar
 
 > **Status:** Reviewed — architectural assessment complete
-> **Last updated:** 2026-11-05 (ADR-015 — DJ library providers: rekordbox + Serato)
+> **Last updated:** 2026-11-07 (ADR-016 — copy a track's search text to the clipboard; earlier: ADR-015 DJ library providers)
 
 ## System Purpose
 
@@ -79,7 +79,8 @@ Business logic and orchestration. No UI imports.
 | `settings_migration.py` | One-time startup migration to settings schema 2 (`PROVIDERS_ENABLED`), legacy cache conversion, orphan temp cleanup. Never raises; never deletes. |
 | `settings_model.py` | View-model for the settings dialog: one `ProviderSettingsView` per provider. |
 | `sync_outcome.py` | Pure rules for what the app does after a sync (reload, preserve state, stop audio, toasts and colours). |
-| `library_copy.py` | Every user-visible string for sources, sync and settings, plus the crate/playlist noun rule. Pure, unit-tested. |
+| `library_copy.py` | Every user-visible string for sources, sync, settings and the copy button (glyphs, tooltips, `format_copied_toast`), plus the crate/playlist noun rule. Pure, unit-tested. |
+| `paste_query.py` | `paste_query(artist, title, file_name) -> str \| None`: the stripped artist + title (no bracketed segments, no `feat.` credits) to paste into a DJ app's search (ADR-016). Not `Track.search_text`. Pure, stdlib-only leaf. |
 | `comment_format.py` | Pure parser for `"<Camelot> - <energy> - <category> - …"` comments. |
 | `log_safety.py` | Holds the `pyrekordbox` logger tree at ERROR and `sqlalchemy` at WARNING (the DB key is logged at DEBUG). Leaf. |
 | `diagnostics.py` | `--self-check-rekordbox` (CI, no DB access) and `--check-rekordbox-library` (counts-only report in `user_data_dir()/diagnostics/`). |
@@ -97,7 +98,9 @@ Presentation layer: CustomTkinter widgets and panels. Panels receive callbacks a
 | Component | Responsibility |
 |-----------|---------------|
 | `track_detail.py` | Now Playing dashboard with search, badges and the empty-library placeholder. |
-| `suggestion_panel.py` | Scored suggestions grid, deferred filters (ADR-012), quiet re-render on live refresh. |
+| `suggestion_panel.py` | Scored suggestions grid, deferred filters (ADR-012), quiet re-render on live refresh. The leftmost **Copy** column holds a `CopyButton` per row; clicks go to the `on_copy` callback and never select the row (ADR-016). |
+| `copy_button.py` | `CopyButton`: icon-only, 36 x 28. Glyphs `❐` ready, `✓` copied (green), `✕` failed (red), `—` disabled. Reverts after 1.5 s; every click restarts the timer; only one button flashes at a time; timers are cancelled on destroy. The tooltip carries the words and shows the exact query. |
+| `clipboard.py` | `copy_to_clipboard(widget, text) -> bool` through Tk's own clipboard. Catches `TclError` only, never logs the text, never calls `update()` (ADR-016). UI leaf. |
 | `filter_bar.py` | Filter pills and overlays. The crate/playlist filter is **grouped by provider** (headers only when two or more providers have crates), searchable (`Select shown` / `Clear shown`), 300 x 320. `preserve_selection` keeps choices across a refresh. |
 | `session_panel.py` | Setlist; `rebind_tracks` after a refresh. |
 | `sync_panel.py` | `SettingsDialog`: one card per provider (switch, generated settings rows, status chip, issues), staged edits with Save / Cancel / `Sync enabled sources`. Provider-agnostic. |
@@ -126,6 +129,11 @@ Serato _Serato_/Subcrates/*.crate        rekordbox master.db (+ -wal)
             └──▶ suggestion_engine.get_suggestions(filters=SuggestionFilters)
                        ▼
                  SuggestionPanel → SessionPanel (setlist)
+                       │ Copy button (no selection, no re-render)
+                       ▼
+                 app._copy_track_text → paste_query → ui/clipboard → toast
+                       ▼
+                 DJ pastes into rekordbox / Serato search (ADR-016)
 ```
 
 **Startup:** `main.py` configures logging and calls `log_safety.silence_secret_loggers()` before any other project import. It handles `--self-check-rekordbox` / `--check-rekordbox-library` and exits. Otherwise it runs `settings_migration.run_startup_migrations()` (never raises) and starts the app, which loads the stored snapshots. Nothing is scanned at startup unless the watcher sees a changed token.
@@ -148,7 +156,7 @@ Serato _Serato_/Subcrates/*.crate        rekordbox master.db (+ -wal)
 1. **Broken import scheme** — **Resolved** (ADR-004).
 2. **Hardcoded Windows paths** — **Resolved** (ADR-005). Serato and rekordbox path detection now live in their providers (ADR-015).
 3. **Dead code (`search_panel.py`)** — **Resolved**.
-4. **Duplicated `_truncate` method** — Partly resolved: `ui/utils.py` has `truncate` and `truncate_start`. Check the remaining panels on next touch.
+4. **Duplicated `_truncate` method** — Partly resolved: `ui/utils.py` has `truncate` and `truncate_start`. Check the remaining panels on next touch. One deliberate duplicate: `library_copy.format_copied_toast` truncates with its own two-line rule, because services can't import `ui/utils` (ADR-016).
 5. **Duplicated Camelot regex** — Centralised in `camelot.py`; `comment_format.py` uses it. Verify on next touch.
 6. **Bare `except Exception: pass`** — Improved: `tag_reader` catches `(MutagenError, OSError)`. Sync, watcher and the provider adapters use documented boundary handlers that log (ADR-015 D5). Check `app.py` dialog-state handlers on next touch.
 7. **No logging** — Largely resolved: services and providers use `logging`. `main.py` configures it.
@@ -160,7 +168,7 @@ Serato _Serato_/Subcrates/*.crate        rekordbox master.db (+ -wal)
 13. **Layering smell `models` → `services` (path identity)** — **Resolved.** `path_key` lives in the leaf `models/path_identity.py`; `library_merge` re-exports it.
 14. **Path-only track identity** (new, accepted) — Serato and rekordbox tracks merge only when their resolved paths match after `path_key`. Moved or duplicated files show as separate tracks. Fuzzy matching is out of scope (ADR-015 D6).
 15. **ID3-only energy and tag reader** (new, R8) — `tag_reader.read_energy_level` reads ID3 only, so non-MP3 rekordbox tracks without comment energy get energy 0 (neutral). Possible follow-up: switch to `mutagen.File`.
-16. **Deck-load gate** — **Resolved.** `DJTrackSelectorApp.deck_load_provider_for(track)` (`source/app.py:375`) filters `track.sources` to enabled providers and calls `registry.first_deck_load_provider`. Nothing calls it from the UI yet; Phase 6 will.
+16. **Deck-load gate** — **Resolved.** `DJTrackSelectorApp.deck_load_provider_for(track)` (`source/app.py:375`) filters `track.sources` to enabled providers and calls `registry.first_deck_load_provider`. Nothing calls it from the UI, **by design**: track hand-off is the clipboard copy button (ADR-016), `DECK_LOAD` stays reserved, and no Phase 6 is planned. Reopening deck loading needs a new ADR that meets ADR-014's bar.
 17. **No automated import-boundary test** (new) — "only `registry.py` imports concrete providers" and "only `db_reader.py` imports pyrekordbox" are enforced by review only. A small AST-scan test would lock them in.
 
 ### What's Working Well

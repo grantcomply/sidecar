@@ -538,7 +538,7 @@ The dialog's Save writes the enabled list and every provider's values in **one**
   - The stored token survives restarts, so the first tick at startup picks up changes made while Sidecar was closed.
 - **A refresh is a silent sync of that one provider.** If `content_hash` is unchanged, nothing reloads. Otherwise `app._reload_library(preserve_state=True)` keeps the current track, setlist, filter selections and any playing preview, and no "Synced" toast is shown. A background failure shows one amber toast per distinct error. `REKORDBOX_AUTO_REFRESH=off` turns the watcher off for rekordbox; the change is picked up on the next tick, with no restart.
 
-**D12: Load-to-deck is a reserved capability that no provider implements.** `ProviderCapability.DECK_LOAD` + `load_to_deck(settings, track_path, deck)`. **Both providers raise `DeckLoadNotSupported`**: Serato because of ADR-014 (`serato/provider.py:142-149`), rekordbox because it is the Phase 6 follow-up (`rekordbox/provider.py:157-159`). The single gate is `registry.first_deck_load_provider(provider_ids, settings_for)` (`registry.py:35-53`), which returns `None` today. **UI rule:** any deck-load control stays hidden while that gate returns `None` for the track's `sources`. Phase 6 needs its own ADR that meets ADR-014's bar.
+**D12: Load-to-deck is a reserved capability that no provider implements.** `ProviderCapability.DECK_LOAD` + `load_to_deck(settings, track_path, deck)`. **Both providers raise `DeckLoadNotSupported`**: Serato because of ADR-014 (`serato/provider.py:142-149`), rekordbox because it is the Phase 6 follow-up (`rekordbox/provider.py:157-159`). The single gate is `registry.first_deck_load_provider(provider_ids, settings_for)` (`registry.py:35-53`), which returns `None` today. **UI rule:** any deck-load control stays hidden while that gate returns `None` for the track's `sources`. Phase 6 needs its own ADR that meets ADR-014's bar. **Update (ADR-016):** the hand-off question was settled by the clipboard instead. No Phase 6 is planned, and `DECK_LOAD` stays reserved and unimplemented.
 
 #### Accepted layering exception
 `services/diagnostics.py` imports `providers.rekordbox.paths` (`TOKEN_FILES`, `resolve_db_path`; `diagnostics.py:24-26`), the only import of a concrete-provider module outside `source/providers/` and `registry.py`. **Accepted** because the diagnostics are rekordbox-specific by purpose: `--self-check-rekordbox` (CI: the frozen build can import pyrekordbox and load SQLCipher, with no DB access) and `--check-rekordbox-library` (the upgrade runbook: a counts-only report with no titles, paths or key, home folder shown as `~`). Sharing the provider's path rule means the report and the provider cannot drift apart. No other module may follow this precedent without its own note here.
@@ -554,3 +554,41 @@ The dialog's Save writes the enabled list and every provider's values in **one**
 - Con: More moving parts: about 20 new modules, a persisted format plus a converter, a watcher thread, and short-lived temp copies of the user's database.
 - Con: The contract carries a method (`load_to_deck`) that no provider implements yet.
 - Future option (not planned): an XML-export source mode inside `source/providers/rekordbox/`, without contract changes.
+
+---
+
+### ADR-016: Track hand-off to DJ software by clipboard (no deck loading)
+
+- **Status:** Accepted
+- **Date:** 2026-11-07 (implemented, reviewed and accepted by the user; ships in the next release)
+- **Relates to:** ADR-014 (a deck load must target a specific track), ADR-015 D12 (`DECK_LOAD` reserved), ADR-001 (Tk single-thread rule), ADR-008 (no new dependency, so no new packaging or licence check).
+- **Design record:** `plans/copy-track-search-text-2026-11/` (`architect-blueprint.md` D1-D6, `implementation-plan.md`, `ui-design-brief.md`).
+
+#### Context
+The user wants to get a Sidecar suggestion onto a deck in rekordbox or Serato. Three routes were tried and rejected:
+
+| Route | Outcome | Why |
+|---|---|---|
+| Virtual MIDI "Load to Deck" note (Serato) | Rejected (ADR-014) | A MIDI note loads whatever is selected in the DJ app's own browser. It can't say which track |
+| OS file drag from Sidecar onto a rekordbox deck | Rejected by the user | Drag isn't the interaction the user wants mid-set. The plan (`plans/rekordbox-load-to-deck-2026-11/`) proposed an ADR-016 that was never accepted; this entry replaces it |
+| Keystroke automation (Sidecar focuses the DJ app and types into its search) | Rejected | If the search box isn't focused, the typed letters fire the DJ app's keyboard shortcuts in the middle of a set |
+
+Both DJ apps' searches match words and substrings across their fields, and the user confirmed this for both.
+
+#### Decision
+**A copy button on every suggestion row puts the track's paste query on the OS clipboard. The DJ pastes it into the DJ app's search and loads the track with that app's own controls.**
+
+- **The paste query** is `services/paste_query.paste_query(artist, title, file_name) -> str | None`, a pure stdlib-only leaf. It is not `Track.search_text`, which is Sidecar's own search haystack. "Less is more": each field has its whitespace and control characters collapsed, then loses balanced `(…)`/`[…]`/`{…}` segments (nested ones too), anything from an unmatched opening bracket onward, and a standalone `feat`/`feat.`/`ft`/`ft.`/`featuring` token plus everything after it. A stray closing bracket becomes a space, so words are never glued together. Separators are trimmed from the ends only. If stripping would leave a field empty, the unstripped field is used. Shape: `"{artist} {title}"` (one space); with no title, the stripped file stem (no artist); with neither, the artist; with nothing, `None`. Case, accents and punctuation inside words are kept. Every word left comes from the DJ app's own indexed fields, so it still matches.
+- **The clipboard** is Tk's own (`ui/clipboard.copy_to_clipboard(widget, text) -> bool`): `clipboard_clear` + `clipboard_append`, on the Tk thread. It catches `tk.TclError` only, logs the type name at WARNING, and never logs the text (library data). It deliberately does **not** call `update()`, which would run queued input events in the middle of the click handler. No new dependency (`pyperclip` and native APIs rejected).
+- **The call path:** `SuggestionPanel` → `on_copy(track) -> bool` → `DJTrackSelectorApp._copy_track_text` (`source/app.py`), which resolves the current `Track` (`_current_object`, so a row left stale by a deferred quiet re-render copies fresh text), builds the query, copies, and shows a green `Copied "…"` toast (at most 75 characters) or a red `COPY_FAILED` toast. It returns whether the text reached the clipboard, and the button shows that outcome.
+- **The copy changes no Sidecar state.** It doesn't select the row, add to the setlist, stop the preview, re-score or re-render.
+- **Every track from every provider is eligible.** There's no capability flag and no provider branching. The query uses provider-neutral `Track` fields.
+- **Sidecar sends the DJ apps nothing.** No MIDI, no synthesised input, no drag, no focus changes. Handing over a track is passive: the DJ pastes. This is now a coding-standards review blocker (providers rule 11).
+
+#### Consequences
+- Pro: It works today for rekordbox and Serato, on every platform Tk supports, with no dependency and no DJ-app integration to break on an upgrade.
+- Pro: There's no risk of firing a DJ shortcut or loading the wrong deck. The DJ app does the loading.
+- Con: **It isn't exact.** The DJ app's search does the matching. Because mix names are stripped, an original and its extended mix give the same query, so several versions may be listed and the DJ confirms by eye (accepted by the user). The UI never says "Load".
+- Con: A clipboard held open by another process may make Tk's copy fail without an error (Windows, unverified). The DJ then sees an unexpected search result before loading anything. Emoji and other non-BMP characters may not survive Tk 8.6's clipboard. See `docs/cross-platform-guide.md` "Clipboard".
+- Con: Copies land in OS clipboard history and cloud clipboard sync, like any copy.
+- **`ProviderCapability.DECK_LOAD` and `load_to_deck` stay reserved and unimplemented.** Both providers still raise `DeckLoadNotSupported`, the gate (`registry.first_deck_load_provider`, `app.deck_load_provider_for`) stays unused, and no Phase 6 is planned. Reopening deck loading needs a new ADR that meets ADR-014's bar and explains why the clipboard is no longer enough.

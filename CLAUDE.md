@@ -46,13 +46,16 @@ sidecar/
 │   ├── settings_migration.py # One-time startup settings migration (schema 2, PROVIDERS_ENABLED)
 │   ├── log_safety.py        # Pins pyrekordbox/sqlalchemy loggers above DEBUG (key safety)
 │   ├── comment_format.py    # "<key> - <energy> - <category> - ..." comment parser
+│   ├── paste_query.py       # Stripped artist + title to paste into a DJ app's search (ADR-016; not Track.search_text)
 │   ├── diagnostics.py       # --self-check-rekordbox / --check-rekordbox-library reports
 │   ├── suggestion_engine.py # Track scoring algorithm
 │   ├── suggestion_filters.py, harmonic_tier.py, dates.py, file_times.py  # Filter + scoring helpers
 │   └── audio_player.py, waveform.py, updater.py  # Preview playback, waveform, auto-update
 ├── ui/
 │   ├── track_detail.py      # Now Playing dashboard with badges
-│   ├── suggestion_panel.py  # Scored suggestions grid + crate filter
+│   ├── suggestion_panel.py  # Scored suggestions grid + crate filter; leftmost Copy column
+│   ├── copy_button.py       # CopyButton: icon-only copy with copied/failed/disabled states
+│   ├── clipboard.py         # copy_to_clipboard() via Tk's clipboard (never update(), never logs text)
 │   ├── session_panel.py     # Setlist/history panel
 │   ├── sync_panel.py        # Settings dialog: one card per music source (switch, settings, status) + sync
 │   ├── search_panel.py      # Autocomplete search dropdown

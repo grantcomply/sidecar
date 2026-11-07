@@ -14,6 +14,7 @@ class Tooltip:
         widget.bind("<Leave>", self._hide, add="+")
 
     def _schedule(self, event):
+        self._hide()  # cancel a pending show, so no timer is ever lost
         self._after_id = self.widget.after(self.delay, self._show)
 
     def _show(self):
@@ -32,6 +33,10 @@ class Tooltip:
             wraplength=400,
         )
         label.pack()
+
+    def hide(self) -> None:
+        """Cancel a pending show and destroy a shown tip (e.g. when the widget is clicked)."""
+        self._hide()
 
     def _hide(self, event=None):
         if self._after_id:

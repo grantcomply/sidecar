@@ -1,7 +1,7 @@
 # UI Design Guide — Sidecar
 
 > **Status:** Starter draft — seeded from the current codebase, maintained by the `ui-designer` agent
-> **Last updated:** 2026-11-05 (architect, at merge of the library-providers feature: settings dialog, playlist filter, Warning colour, noun rule. Design source: `plans/archive/dj-library-providers-2026-11/ui-design-brief.md` and `ui-audit-phase-3c.md`)
+> **Last updated:** 2026-11-07 (ui-designer, at ship of the copy-search-text feature: Success/Error tokens widened, self-confirming action button pattern, local-plus-toast success, "never say Load" rule. Design source: `plans/copy-track-search-text-2026-11/ui-design-brief.md`). Previously 2026-11-05 (architect, library-providers merge: settings dialog, playlist filter, Warning colour, noun rule)
 > **Authoritative for:** visual tokens, component patterns, window layout, microcopy, and UI state conventions
 
 This is the design counterpart to `docs/architecture-overview.md`. The architect owns
@@ -49,9 +49,9 @@ Defined once in `source/config.py` (`SUCCESS_COLOR`, `WARNING_COLOR`, `ERROR_COL
 
 | Token | Hex | Meaning |
 |-------|-----|---------|
-| Success | `#28a745` | Sync complete, library loaded; the `Sync enabled sources` button fill |
+| Success | `#28a745` | Sync complete, library loaded; the `Sync enabled sources` button fill; a copy completed (the `✓` button fill and the green `Copied "…"` toast) |
 | Warning | `#ffc107` | Amber. Needs attention but nothing is broken: a partial sync failure, a background auto-update failure, snapshot warnings, a prompt on an empty field (`Database not found` when nothing is set up), the footer "Skipped …" line, "Turn on at least one source…". Shares its hex with the score "usable" bucket (`suggestion_panel.py`); accepted overlap |
-| Error | `#dc3545` | A real failure: a wrongly chosen file, every source failed (toast with an `Open settings` button), a card whose source can't be read |
+| Error | `#dc3545` | A real failure: a wrongly chosen file, every source failed (toast with an `Open settings` button), a card whose source can't be read; a copy that failed (the `✕` button fill and the red `Couldn't copy…` toast) |
 | Info | `#4AB8D4` | Update available, neutral notice, `Syncing…` in progress (cyan, so it isn't confused with amber) |
 
 ### Structural / text colours
@@ -98,6 +98,7 @@ Cite these file:line anchors when claiming "we already do X."
 | **Search + dropdown** | [track_detail.py:24-64](../source/ui/track_detail.py#L24-L64) | Entry with placeholder, 150ms debounce, scrollable results with a column header; rows hover-highlight. |
 | **Toast notification** | [app.py:137](../source/app.py#L137) `_show_toast` | Transient top-bar message, colour-coded by outcome, auto-dismiss (default 4000ms), optional inline action button. |
 | **Settings dialog** | `source/ui/sync_panel.py` `SettingsDialog` | Modal `CTkToplevel`, title `Settings — Sidecar v{version}`, **640x580 default, 540x420 minimum, resizable**. Heading "Music sources" (15 bold) + one grey subline. Body is a `CTkScrollableFrame` of **one card per provider** in registry order (rekordbox, Serato DJ): an on/off `CTkSwitch`, the name (13 bold; dimmed grey when off), a right-aligned status chip (`Updates automatically · N tracks · M playlists` / `Last updated …`, or `Synced … · …`, `Not synced yet`, `Syncing…`, `Off. Saved library kept.`), then rows generated from the provider's `SettingSpec`s: label + entry + `Browse` for files and folders, `On`/`Off` tiles for a two-choice setting, a grey hint line, and the issue line **under its field** (12 pt, bold red for errors, amber for prompts). A switched-off card collapses to its header plus one grey line. Footer pinned below the scroll area: a status line, an "Unsaved changes" tag, and **Close/Cancel · Save · Sync enabled sources**. Edits are **staged**: Save applies them in one write and reloads from stored snapshots without scanning; Cancel, Esc and the window close drop them with no prompt; Sync saves, then scans every enabled source without an error (others are skipped, named in an amber footer line). Disabled primary buttons use low-chroma fills. The dialog never branches on provider id; per-provider text comes from the provider. The pattern for any settings/secondary window. |
+| **Self-confirming action button** | `source/ui/copy_button.py` `CopyButton` | Icon-only `CTkButton`, 36 x 28, corner radius 6, glyph 14 pt, in the **leftmost suggestion-grid column under the header `Copy`** (`suggestion_panel.py`, `"copy": 36`). It confirms its own result in place, with a glyph per state so meaning never rests on colour alone. **Ready** `❐` (U+2750), secondary-grey glyph on the card fill `#2a2a2a`; hover is accent blue `#1f6aa5` with a white glyph. **Copied** `✓` (bold, white) on Success. **Failed** `✕` (bold, white) on Error. **Disabled** `—` (`#555555`) when there is nothing to copy. Copied and failed keep their own fill on hover, so a resting pointer never repaints them blue. **Timing:** reverts to ready after 1.5 s; every click restarts the timer and is never ignored; only one button in the app flashes at a time (a new click resets the previous one); no timer outlives the button when the grid re-renders. **Tooltip follows the state** (ready, copied, failed, disabled wording in §8), is hidden on click and restored when the timer ends. Uses `command=` only, never a `<Button-1>` binding, so a click cannot select the row or stop the preview. **Glyph fallback, if `❐` ever fails to render on a machine:** `⧉` (U+29C9), then `□`, then a 56 px text label `Copy`. There is no Now Playing copy control. Reuse this pattern for any future one-click action whose result the DJ should see without moving their eyes. |
 | **Resizable split** | [app.py:88](../source/app.py#L88) `tk.PanedWindow` | Horizontal, flat sash, 50/50 initial. |
 | **Hover tooltip** | `source/ui/tooltip.py` | Reusable hover tooltip. |
 | **Text truncation** | [utils.py:1](../source/ui/utils.py#L1) `truncate` | Ellipsis at max length — the canonical way to fit text in fixed columns. |
@@ -128,6 +129,13 @@ Every panel and feature must define all four. Current handling:
   untouched, and the suggestion list defers its re-render while the pointer is over it or a
   preview plays. The one exception is *"Imported N tracks from rekordbox"* when a quiet refresh
   fills an empty library.
+- **Local-plus-toast success** — for a one-click action on a row (copy search text), success shows
+  twice: in place on the control that was clicked (the button turns green `✓` for 1.5 s), and in
+  the top-bar toast (green `Copied "…"`), which keeps the exact text visible after the button has
+  reverted. Failure does the same in red (`✕` plus `Couldn't copy to the clipboard. Try again.`).
+  The toast replaces any toast already showing, including a red one with an `Open settings` button:
+  the DJ asked for the copy, so theirs wins. Loading and empty need no handling (the action is
+  instant; with nothing to copy the button is the disabled `—`).
 
 ## 7. Known design debt
 
@@ -164,6 +172,19 @@ Don't re-flag these in audits unless asked to triage them.
 - **All user-visible strings for sources, sync and settings live in `source/services/library_copy.py`**
   (pure, unit-tested). Don't inline new ones in widgets.
 - **Thousands separators** in counts (*"1,248 tracks"*).
+- **Never say "Load"** for copying search text. Sidecar copies text for the DJ to paste; it does not
+  load a track into a deck. Also avoid "Sent", "Send", "Deck", "Added", "Selected" there. Say
+  "Copy" / "Copied". Provider names do not appear in these strings; the wording is neutral
+  (*"your DJ software's search box"*).
+- **Icon-only buttons carry their meaning in two places:** a tooltip and a column header (the grid's
+  `Copy` header, sentence case, 10 bold). The tooltip follows the button's state.
+- **Copy strings** (`library_copy.py`): tooltip ready `Copy to the clipboard:` / `{query}` /
+  `Then paste it into your DJ software's search box.`; copied `Copied:` / `{query}` /
+  `Now paste it into your DJ software's search box.`; failed `Couldn't copy. Click to try again.`;
+  disabled `Nothing to copy: this track has no artist or title`; success toast `Copied "{text}"`
+  (text cut with `…` so the toast stays within 75 characters); failure toast
+  `Couldn't copy to the clipboard. Try again.` The tooltip and toast show the same stripped query
+  (featuring credits and mix suffixes removed), so what the DJ previews is what they paste.
 
 ## 9. Open questions
 
@@ -173,3 +194,11 @@ they land.
 - Keyboard-driven track selection for the core loop?
 - A colour-blind-safe mode (shapes/labels alongside hue)?
 - Commit to a light theme, or delete the dead theme tuples?
+
+Answered (copy-search-text, shipped 2026-11):
+- **Icon-only button, 36 px**, glyph `❐`; header cell reads `Copy`.
+- **No Now Playing copy control** in v1.
+- **Confirmation lasts 1.5 s**, restarted by each click; the button shows the failed state, not only a toast.
+- **Tooltip wording is neutral** ("your DJ software's search box"), not named from enabled providers.
+- **The success toast stays** and replaces any other toast.
+- **Keyboard shortcut for copy** is out of scope for v1 (consistent with §7.6).

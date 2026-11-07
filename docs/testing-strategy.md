@@ -4,13 +4,13 @@
 
 ## Current State
 
-**Broad unit suite in place.** `tests/` covers the services (Camelot, engine, filters, comment format, tag reader, file times, sync, store, merge, watcher, settings migration and view-model, sync outcome, copy, diagnostics, log safety), both providers and their contract, the models, config provider settings, and the key UI wiring (filter dropdowns, settings dialog, sync wiring, session rebind, quiet suggestion refresh, empty states). Run everything with `python -m pytest`; every phase of a feature ends green.
+**Broad unit suite in place.** `tests/` covers the services (Camelot, engine, filters, comment format, tag reader, file times, sync, store, merge, watcher, settings migration and view-model, sync outcome, copy, diagnostics, log safety), both providers and their contract, the models, config provider settings, and the key UI wiring (filter dropdowns, settings dialog, sync wiring, session rebind, quiet suggestion refresh, empty states, the copy button and clipboard). Run everything with `python -m pytest`; every phase of a feature ends green.
 
 ## Test Framework
 
 - **Runner:** pytest
 - **Structure:** `tests/` mirrors `source/` (`tests/services/`, `tests/providers/`, `tests/providers/rekordbox/`, `tests/models/`, `tests/ui/`)
-- **Shared fixtures:** `tests/conftest.py` (e.g. an isolated user data dir), `tests/providers/rekordbox/conftest.py`
+- **Shared fixtures:** `tests/conftest.py` (e.g. an isolated user data dir, `make_track`), `tests/providers/rekordbox/conftest.py`, `tests/ui/conftest.py` (`tk_root`, below)
 
 ## Ground rules
 
@@ -29,6 +29,7 @@
 | `RekordboxProvider(exists=…, energy_reader=…, energy_cache=…, tmp_root=…)` | Test seams for file existence, tag energy, the memo cache and the temp-copy root. |
 | `LibraryWatcher(clock=…)` and `.tick()` | Deterministic watcher tests with no thread or sleep. |
 | `SyncCoordinator(runner=…)` | Run syncs synchronously or hold them open to test coalescing. |
+| `tk_root` (`tests/ui/conftest.py`) | A withdrawn live Tk root, shared by `tests/ui/`. **Skips cleanly** when Tk can't start (no display). Tk callback exceptions are collected on `root.callback_errors` instead of printed, so a test can assert `tk_root.callback_errors == []` after pumping timers. Teardown destroys the root and clears `CopyButton._flashing`, so the one-flash-at-a-time reference never leaks between tests. Modules that define their own `tk_root` (e.g. `test_suggestion_quiet.py`) keep theirs; new UI tests should use the shared one. |
 
 ## What must be tested (provider feature, ADR-015)
 
@@ -66,6 +67,14 @@ Pure `should_refresh`: no token / same token; settle window; minimum interval; f
 ### UI and app wiring (`tests/ui/`)
 Smoke and behaviour tests that construct real CTk widgets (skipped without a display): settings dialog (staged edits, Save/Cancel, no provider branching), filter dropdown groups, search and `Select shown`/`Clear shown`, `preserve_selection`, app sync wiring, session rebind, quiet suggestion re-render, empty-library states. Keep UI decisions in pure modules (`library_copy`, `settings_model`, `sync_outcome`) so most of the behaviour is tested without Tk.
 
+### Copy search text (ADR-016)
+- `tests/services/test_paste_query.py`: every row of the blueprint D1 worked-examples table; shape (artist + title joined by one space, title only, artist only, all empty or whitespace → `None`, no hyphen added); whitespace and control characters collapse; case and accents kept; title stripping (balanced, nested and multiple brackets, `feat.`/`ft`/`featuring` tails in either order with brackets, unmatched opening bracket, stray closing bracket becomes a space, fallback when stripping leaves nothing, `Aftermath`/`Left Feather` untouched); artist stripping with collaborations (`&`, `,`, `x`, `vs.`) kept; separators trimmed at the ends but kept between words; the file-stem fallback (stripped, no artist prefix, only the last extension removed); deep nesting returns quickly.
+- `tests/services/test_library_copy.py` (extended): toast truncation to exactly 75 characters with the 66/67 boundary; `COPY_FAILED` fits the toast; none of the copy strings uses an avoided word such as "Load"; both tooltips carry the exact, untruncated query as their second line; the four `BUTTON_*` glyphs are single, distinct BMP characters.
+- `tests/ui/test_clipboard.py`: round trip through Tk's clipboard (this reads Tk's own copy, not the OS clipboard; the OS side is manual check M1); a second copy replaces the first; a `TclError` returns `False` and logs one WARNING that doesn't contain the text.
+- `tests/ui/test_app_copy_track.py` (stub `self`, no window): success copies `paste_query` output and shows one green toast; stripped text reaches clipboard and toast; a stale row copies the library's current object; a track gone from the library copies the row's object; clipboard failure → red `COPY_FAILED`, returns `False`; `None` query → no clipboard call, no toast; no calls to the setlist, dashboard or suggestion panel.
+- `tests/ui/test_suggestion_copy.py` (live root): a copy click calls `on_copy` without selecting or re-rendering, and doesn't stop a playing preview; a real pointer click on the button never reaches the row's select handler; no `on_copy` → failed state; the button is at grid column 0 and the score at column 1; the first header is `HEADER_COPY` at the copy width; a track with nothing to copy has a disabled button that still has its `COPY_NOTHING` tooltip; the ready tooltip previews the exact stripped query; glyphs and tooltips follow ready → copied/failed → ready; copied and failed hover with their own fill, ready hover paints the accent fill; a click hides the tooltip; rapid clicks restart the timer; only one button flashes at a time (including a failed flash); a re-render that destroys a flashing button leaves no stale timer or reference; destroy cancels a pending tooltip show. Tests compare against the `library_copy` constants, never literal glyphs, and shorten the 1.5 s timer by monkeypatching `COPY_FEEDBACK_MS`.
+- `tests/ui/test_tooltip_hide.py`: public `Tooltip.hide()` cancels a pending show, destroys a shown tip, is harmless with nothing shown; scheduling twice keeps one pending show.
+
 ### Earlier priorities (still valid)
 - `camelot.py` and `suggestion_engine.py`: tiers, symmetry (ADR-010 R2), key offset (ADR-011), filters (ADR-012).
 - `comment_format.py`: `"4A - 7 - Banger - Fat Bass Vocal"`, partial (`"4A - 7"`, `"4A"`, `""`), malformed energy, unknown categories, free text.
@@ -76,6 +85,32 @@ Smoke and behaviour tests that construct real CTk widgets (skipped without a dis
 - **Import-boundary test** (recommended): an AST scan of `source/` asserting that (a) only `providers/registry.py` imports `providers.serato`/`providers.rekordbox` modules (allow-list: `services/diagnostics.py` → `providers.rekordbox.paths`), and (b) only `providers/rekordbox/db_reader.py` imports `pyrekordbox` or `sqlalchemy`.
 - **Deck-load gate:** covered by `tests/ui/test_app_deck_load_gate.py` (`None` with the real providers; a fake `DECK_LOAD` provider is returned only when enabled and present in `sources`).
 - **Manual-only checks** (record results in the plan): frozen build `--self-check-rekordbox` and `--check-rekordbox-library` on Windows; upgrade from v0.1.6 (settings and library preserved, no duplicate shortcuts); editing in rekordbox while Sidecar is open (refresh appears quietly); the 1000x650 window minimum and 150% scaling.
+
+### Manual checklist: copy search text (ADR-016)
+Tk's own clipboard is all the automated tests can see. Pasting into another app, timing, scaling and macOS need these manual checks. Full wording and pass criteria: `plans/copy-track-search-text-2026-11/implementation-plan.md` T3.6.
+
+**Status:** M1-M10 and M13-M16 were accepted by the user on Windows; per-check results not recorded. M11 and M12 are **unverified**. Gate G (glyph render at CustomTkinter scaling 100% and 150%) passed on 2026-11-06. A synthetic render at 1000x650 shows the Copy and Key columns visible, with BPM's cells under the scrollbar (M8).
+
+| # | Check | Status |
+|---|---|---|
+| M1 | Copy a suggestion, paste into rekordbox's search; the track is in the results | Accepted (Windows); not itemised |
+| M2 | Same, pasting within half a second (the no-`update()` decision) | Accepted (Windows); not itemised |
+| M3 | Same as M1 in Serato DJ | Accepted (Windows); not itemised |
+| M4 | Copy, close Sidecar, paste into Notepad | Accepted (Windows); not itemised |
+| M5 | Copy while a preview plays: preview continues, row not selected, setlist unchanged | Accepted (Windows); not itemised |
+| M6 | Copy, then move the pointer back over the row: no selection, no rebuild flicker | Accepted (Windows); not itemised |
+| M7 | Copy two tracks quickly: second toast replaces the first, clipboard holds the second, only the second row flashes | Accepted (Windows); not itemised |
+| M8 | 1000x650 at several sash positions: Copy column always visible | Accepted (Windows); synthetic render: Copy and Key visible, BPM under the scrollbar |
+| M9 | Accented, CJK and emoji characters: record what pastes | Accepted (Windows); not itemised |
+| M10 | A title with `(Extended Mix)` and `feat. X`: toast and paste show the stripped query | Accepted (Windows); not itemised |
+| M11 | Real Windows 150% display scaling: glyphs fit 36 x 28, header fits, rows don't grow | **Unverified** |
+| M12 | macOS: M1 and M4 with rekordbox or Serato for Mac | **Unverified** |
+| M13 | Five clicks in a second: stays copied, reverts about 1.5 s after the last, no blue flicker | Accepted (Windows); not itemised |
+| M14 | Hover for the tooltip, then click: tooltip disappears and stays hidden until re-entry | Accepted (Windows); not itemised |
+| M15 | Hover two rows' buttons: each tooltip previews its own row's text | Accepted (Windows); not itemised |
+| M16 | Force a failed copy: red failed state and red toast; the next good copy recovers | Accepted (Windows); not itemised |
+
+Re-run M1-M3 after any change to `paste_query`, `ui/clipboard.py` or the Tk version, and record results per check next time.
 
 ## Test Naming Convention
 

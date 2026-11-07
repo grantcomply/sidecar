@@ -133,6 +133,29 @@ Up to v0.1.6 the folder was named `SeratoSidecar`. On launch of a newer version,
 - Test font sizes on multiple platforms (what looks good at 12pt on Windows may differ on Mac)
 - Don't assume specific window decorations or title bar behavior
 
+## Clipboard
+
+The suggestion rows' copy button puts the track's paste query on the OS clipboard for the DJ to paste into rekordbox's or Serato's search (ADR-016). All writes go through `source/ui/clipboard.copy_to_clipboard`, which uses Tk's own clipboard (`clipboard_clear` + `clipboard_append`). There's no extra dependency. It runs on the Tk thread, catches `tk.TclError` only, and never calls `update()`.
+
+Most rows below come from how Tk 8.6 implements its clipboard. They're assumptions until a manual check confirms them.
+
+| | Windows (shipped) | macOS (built, unverified) | Linux (dev only) |
+|---|---|---|---|
+| How Tk publishes the text | Takes ownership of the clipboard with **delayed rendering**: the text is handed over when another app asks for it, served by Sidecar's running Tk event loop | Declares the text on the general `NSPasteboard`, possibly provided lazily | X11 `CLIPBOARD` selection, owned by Sidecar |
+| DJ switches to rekordbox/Serato and pastes | Works: accepted by the user on Windows (M1-M3; per-check results not recorded) | Expected to work while Sidecar runs; **unverified (M12)** | Works while Sidecar runs |
+| Sidecar is busy when the DJ pastes | The paste waits until the Tk thread is free (at most a 60-row re-render, a fraction of a second) | Same, if lazy | Same |
+| Sidecar closed after copying | Tk renders all formats on shutdown, so the text should survive (M4) | May be lost on quit if lazy; **unverified (M12)** | Lost unless a clipboard manager holds it |
+| Sidecar crashes or is killed after copying | The text is lost. Acceptable: Sidecar runs for the whole set | Same | Same |
+| Another process holds the clipboard open (clipboard managers, remote desktop) | Tk may fail **without** raising `TclError`. The DJ then pastes old text and sees an unexpected search result before loading anything | Not expected | n/a |
+| Emoji and other non-BMP characters | Tk 8.6 support is incomplete: they may paste as `?` or be dropped. The other words still match (M9) | Same | Same |
+| Clipboard history / cloud sync | Win+V history and cloud clipboard keep the copied artist and title, as with any copy | Universal Clipboard may sync it | Clipboard managers may keep it |
+
+**Copy-button glyphs.** `❐` (U+2750), `✓` (U+2713), `✕` (U+2715) and `—` (U+2014) are all in the Basic Multilingual Plane with no emoji presentation, and no font family is set, so Tk falls back to a symbol font. Gate G (2026-11-06, Windows dev machine) rendered them cleanly at CustomTkinter widget scaling 100% and 150%. Real Windows 150% *display* scaling (M11) and macOS rendering are unverified.
+
+**Narrow window.** In a synthetic render at the 1000x650 minimum (M8), the Copy and Key columns are visible and BPM's cells are under the scrollbar. The Copy column is leftmost so it is never the one that clips.
+
+**Verification status.** The user tried the Windows build and accepted the feature. The manual checks M1-M16 (`plans/copy-track-search-text-2026-11/implementation-plan.md`, T3.6, and `docs/testing-strategy.md`) were part of that acceptance, but **per-check results weren't recorded**. Explicitly **unverified:** M11 (real Windows 150% display scaling) and M12 (macOS paste, and paste after quitting Sidecar). When either is run, record the result here and replace "unverified".
+
 ## Binary File Parsing (Serato .crate files)
 
 - Serato .crate files use UTF-16 Big Endian encoding for track paths

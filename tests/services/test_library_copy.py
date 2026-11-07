@@ -265,3 +265,86 @@ def test_crate_tooltip_lines_skips_empty_groups_and_unknown_provider_uses_noun()
     groups = [("rekordbox", []), ("Serato DJ", ["X"]), (None, ["ghost"])]
     assert c.crate_tooltip_lines(groups, "playlist") == ["Serato DJ: X", "Playlists: ghost"]
     assert c.crate_tooltip_lines([], "crate") == []
+
+
+# ── Copy search text (copy-track-search-text plan T1.4) ──
+
+_COPY_GLYPHS = (c.BUTTON_COPY, c.BUTTON_COPIED, c.BUTTON_COPY_FAILED, c.BUTTON_COPY_DISABLED)
+_AVOIDED_WORDS = ("load", "loaded", "sent", "send", "deck", "added", "selected")  # brief §8
+
+
+def _copy_strings() -> list[str]:
+    query = "Artist A Track One"
+    return [
+        *_COPY_GLYPHS,
+        c.HEADER_COPY,
+        c.COPY_NOTHING,
+        c.COPY_FAILED,
+        c.COPY_FAILED_TOOLTIP,
+        c.format_copy_tooltip(query),
+        c.format_copied_tooltip(query),
+        c.format_copied_toast(query),
+    ]
+
+
+def test_copied_toast_short_text_shown_in_full_inside_quotes():
+    assert c.format_copied_toast("Artist A Track One") == 'Copied "Artist A Track One"'
+
+
+def test_copied_toast_long_text_truncated_to_max_with_ellipsis():
+    toast = c.format_copied_toast("x" * 200)
+    assert len(toast) == c.COPIED_TOAST_MAX == 75
+    assert toast.startswith('Copied "')
+    assert toast.endswith('…"')
+
+
+def test_copied_toast_boundary_66_kept_67_truncated():
+    at_limit = "y" * 66
+    assert c.format_copied_toast(at_limit) == f'Copied "{at_limit}"'
+    assert len(c.format_copied_toast(at_limit)) == 75
+    over = c.format_copied_toast("y" * 67)
+    assert len(over) == 75
+    assert over.endswith('…"')
+
+
+def test_copy_failed_fits_toast_limit():
+    assert len(c.COPY_FAILED) <= c.COPIED_TOAST_MAX
+
+
+def test_copy_strings_never_use_avoided_words():
+    for text in _copy_strings():
+        words = {w.strip(".,:;!?\"'").lower() for w in text.split()}
+        assert not words & set(_AVOIDED_WORDS), text
+        assert "load" not in text.lower(), text
+
+
+def test_copy_tooltip_second_line_is_exact_query():
+    query = "Artist A Track One"
+    lines = c.format_copy_tooltip(query).split("\n")
+    assert lines == [
+        "Copy to the clipboard:",
+        query,
+        "Then paste it into your DJ software's search box.",
+    ]
+
+
+def test_copy_tooltip_long_query_not_altered_or_truncated():
+    query = "Artist A " + "Long Title " * 20
+    assert c.format_copy_tooltip(query).split("\n")[1] == query
+
+
+def test_copied_tooltip_second_line_is_exact_query():
+    query = "Artist A Track One"
+    lines = c.format_copied_tooltip(query).split("\n")
+    assert lines == ["Copied:", query, "Now paste it into your DJ software's search box."]
+
+
+def test_copy_button_glyphs_single_distinct_bmp_characters():
+    assert all(len(g) == 1 for g in _COPY_GLYPHS)
+    assert len(set(_COPY_GLYPHS)) == len(_COPY_GLYPHS)
+    assert all(ord(g) < 0x10000 for g in _COPY_GLYPHS)
+    # Ready glyph is one of the brief §3.3 fallback ladder: ❐, ⧉, □.
+    assert ord(c.BUTTON_COPY) in {0x2750, 0x29C9, 0x25A1}
+    assert (c.BUTTON_COPIED, c.BUTTON_COPY_FAILED, c.BUTTON_COPY_DISABLED) == (
+        "\u2713", "\u2715", "\u2014",  # ✓ ✕ —
+    )

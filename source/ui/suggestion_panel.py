@@ -8,15 +8,20 @@ from typing import TYPE_CHECKING
 import customtkinter as ctk
 
 from source.config import CAMELOT_COLORS, energy_color
-from source.services.library_copy import cleared_filter_message, crate_tooltip_lines, noun_title
+from source.services.library_copy import (
+    HEADER_COPY, cleared_filter_message, crate_tooltip_lines, noun_title,
+)
+from source.services.paste_query import paste_query
 from source.services.suggestion_filters import SuggestionFilters, build_filters, reconcile_filters
 from source.services.waveform import WaveformGenerator
+from source.ui.copy_button import CopyButton
 from source.ui.filter_bar import FilterBar, FloatingOverlay
 from source.ui.tooltip import Tooltip
 from source.ui.utils import truncate
 from source.ui.waveform_widget import WaveformWidget
 
 if TYPE_CHECKING:
+    from source.models.track import Track
     from source.services.audio_player import AudioPlayer
 
 logger = logging.getLogger(__name__)
@@ -80,6 +85,7 @@ def empty_state_message(
 
 # Column widths for the suggestion grid
 _COL = {
+    "copy": 36,  # icon-only CopyButton, 36 x 28 (copy brief §3.4)
     "score": 48, "artist": 140, "title": 160,
     "key": 48, "bpm": 48, "energy": 32, "genre": 68,
     "play": 32, "add": 32,
@@ -95,10 +101,12 @@ class SuggestionPanel(ctk.CTkFrame):
         on_select=None,
         on_filter_change=None,
         audio_player: AudioPlayer | None = None,
+        on_copy: Callable[[Track], bool] | None = None,
         **kwargs,
     ):
         super().__init__(master, **kwargs)
         self._on_select = on_select
+        self._on_copy = on_copy  # copy search text; returns True when it reached the clipboard
         self._on_filter_change = on_filter_change
         self._audio_player = audio_player
         self._crate_labels: dict[str, str] = {}  # crate id -> display label
@@ -152,6 +160,7 @@ class SuggestionPanel(ctk.CTkFrame):
         col_hdr.grid_propagate(False)
 
         headers = [
+            (HEADER_COPY, _COL["copy"]),
             ("%", _COL["score"]), ("Artist", _COL["artist"]),
             ("Title", _COL["title"]), ("Key", _COL["key"]),
             ("BPM", _COL["bpm"]), ("E", _COL["energy"]),
@@ -433,7 +442,11 @@ class SuggestionPanel(ctk.CTkFrame):
 
     @staticmethod
     def _signature(scored_tracks: list) -> tuple:
-        """What the list visibly shows; equal signatures need no re-render."""
+        """What the list visibly shows; equal signatures need no re-render.
+
+        The copy column depends only on title, artist and path (file name), which
+        are already here (copy blueprint D5).
+        """
         return tuple(
             (
                 s.track.full_file_path, round(s.total_score, 6), s.harmonic_tier,
@@ -572,6 +585,15 @@ class SuggestionPanel(ctk.CTkFrame):
                 (track.genre or "", _COL["genre"], None, "normal"),
             ]
 
+            # Copy button (leftmost). command= only: no <Button-1> binding, and not
+            # in the hover loop, so a click never selects the row or rebuilds the list.
+            copy_btn = CopyButton(
+                row,
+                query=paste_query(track.artist, track.title, track.file_name),
+                command=lambda t=track: self._copy(t),
+            )
+            copy_btn.grid(row=0, column=0, padx=(6, 2), sticky="w")
+
             labels = []
             for col, (text, width, color, weight) in enumerate(cells):
                 lbl = ctk.CTkLabel(
@@ -580,14 +602,11 @@ class SuggestionPanel(ctk.CTkFrame):
                     text_color=color if color else ("gray10", "gray90"),
                     anchor="w",
                 )
-                lbl.grid(
-                    row=0, column=col,
-                    padx=(6 if col == 0 else 2, 2), pady=5, sticky="w",
-                )
+                lbl.grid(row=0, column=col + 1, padx=(2, 2), pady=5, sticky="w")
                 lbl.bind("<Button-1>", lambda e, t=track: self._select_track(t))
                 labels.append(lbl)
 
-            next_col = len(cells)
+            next_col = len(cells) + 1  # after the copy column
 
             # Play/pause button (only when audio backend is available)
             if self._audio_available:
@@ -639,6 +658,10 @@ class SuggestionPanel(ctk.CTkFrame):
             Tooltip(row, "\n".join(tip_lines))
 
     # ── Track selection ──
+
+    def _copy(self, track: Track) -> bool:
+        """Copy the row's search text. Doesn't select the row or stop the preview."""
+        return self._on_copy(track) if self._on_copy is not None else False
 
     def _select_track(self, track):
         # Selecting a track stops any active preview

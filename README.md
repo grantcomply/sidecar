@@ -108,6 +108,8 @@ Tracks with no harmonic relationship at all are left out.
 
 Each suggestion shows a colour-coded score. Use the filter bar to narrow suggestions by **Crates** (Serato only) or **Playlists** (when rekordbox is on), genre, key offset (move up or down the wheel) and date added. The crates/playlists list is grouped by source and has a search box. Filter changes apply when you click **Apply**.
 
+Click the copy button (❐) next to a suggestion, then paste into rekordbox's or Serato's search to find it. Copied text also lands in your system's clipboard history, as any copy does.
+
 ### 5. Chain Through Your Set
 
 Click **Select** on any suggestion to make it the new current track. The suggestions refresh immediately, letting you plan a full set by chaining from track to track.

@@ -334,6 +334,55 @@ def format_refresh_failure(name: str, error: str) -> str:
     return f"{name} auto-update failed: {error}"
 
 
+# ── Copy search text (copy-track-search-text brief §8) ──
+# Never say "Load" here: the DJ app's search finds the track, the DJ loads it.
+
+# Icon-only button glyphs, one per state (state is never colour alone).
+# All in the BMP with no emoji presentation; fallback ladder in brief §3.3.
+BUTTON_COPY = "\u2750"  # ❐ ready
+BUTTON_COPIED = "\u2713"  # ✓ copied
+BUTTON_COPY_FAILED = "\u2715"  # ✕ failed
+BUTTON_COPY_DISABLED = "\u2014"  # — nothing to copy
+HEADER_COPY = "Copy"
+COPY_NOTHING = "Nothing to copy: this track has no artist or title"
+COPY_FAILED = "Couldn't copy to the clipboard. Try again."
+COPY_FAILED_TOOLTIP = "Couldn't copy. Click to try again."
+COPIED_TOAST_MAX = 75
+
+_COPIED_TOAST_PREFIX = 'Copied "'
+_COPIED_TOAST_SUFFIX = '"'
+_ELLIPSIS = "\u2026"  # …
+
+
+def format_copy_tooltip(query: str) -> str:
+    """Ready tooltip; the middle line is the exact text that will be copied."""
+    return "\n".join((
+        "Copy to the clipboard:",
+        query,
+        "Then paste it into your DJ software's search box.",
+    ))
+
+
+def format_copied_tooltip(query: str) -> str:
+    """Tooltip during the copied state (shown if the DJ re-hovers)."""
+    return "\n".join((
+        "Copied:",
+        query,
+        "Now paste it into your DJ software's search box.",
+    ))
+
+
+def format_copied_toast(text: str) -> str:
+    """``Copied "<text>"``, with ``text`` cut with ``…`` so the toast fits ``COPIED_TOAST_MAX``.
+
+    Truncates here rather than with ``ui/utils.truncate``: services must not
+    import ui (blueprint D3; debt #4).
+    """
+    room = COPIED_TOAST_MAX - len(_COPIED_TOAST_PREFIX) - len(_COPIED_TOAST_SUFFIX)
+    shown = text if len(text) <= room else text[: room - 1] + _ELLIPSIS
+    return f"{_COPIED_TOAST_PREFIX}{shown}{_COPIED_TOAST_SUFFIX}"
+
+
 # ── Empty library (brief §5.8) ──
 
 

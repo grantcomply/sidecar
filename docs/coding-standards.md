@@ -62,6 +62,7 @@ These rules protect the provider boundary, the user's DJ-software files and the 
 8. **Provider messages:** `ProviderIssue.message` / `ProviderError` text is a short phrase with an initial capital, no trailing period, no provider name and no path, and fits the 75-character partial-failure toast. User-visible strings outside providers live in `services/library_copy.py`.
 9. **Threading:** `scan()` and `load_to_deck()` run off the Tk thread. `validate()`, `detected_values()` and `change_token()` are stat-only and safe anywhere. Sync and watcher callbacks reach Tk only through `after(0, ...)`.
 10. **Privacy:** no real titles, artists, paths or comments from anyone's library in code, tests, fixtures, logs above DEBUG, diagnostics reports or docs. Diagnostics report counts only and show the home folder as `~`.
+11. **No automating the DJ apps.** Sidecar never synthesises input events (keystrokes, mouse, drag), never focuses or automates another application, and never sends a DJ app anything (MIDI, IPC, files) to cause a deck load. Handing over a track is passive: the clipboard, and the DJ pastes (ADR-016). `DECK_LOAD` stays reserved; reopening it needs a new ADR.
 
 ## UI Code
 
@@ -69,6 +70,9 @@ These rules protect the provider boundary, the user's DJ-software files and the 
 - Keep widget creation and event binding separate where practical
 - Use `ctk.CTkFont()` for all font specifications
 - Extract magic numbers (sizes, padding, colors) to named constants
+- Clipboard writes go through `ui/clipboard.copy_to_clipboard`; never call `update()` after a clipboard write (it runs queued input events mid-handler; use `update_idletasks()` if a flush is ever needed). Never log the copied text (providers rule 10)
+- A button inside a clickable row (the suggestion rows select on `<Button-1>`) uses `command=` only and never binds `<Button-1>` itself, so its click can't reach the row's handler (the play and copy buttons, ADR-016)
+- Widgets that start `after` timers cancel them in `destroy()` and guard the callback with `winfo_exists()`, because a re-render destroys rows (`CopyButton`)
 
 ## Configuration
 
